@@ -65,6 +65,20 @@ impl Storage {
         })
     }
 
+    /// Set the `HardState`.
+    fn set_hard_state(&mut self, hard_state: HardState) -> Result<()> {
+        self.db.put(HARD_STATE_KEY, &proto_message_as_bytes(&hard_state)?)?;
+        self.hard_state = hard_state;
+        Ok(())
+    }
+
+    /// Set the `ConfState`.
+    fn set_conf_state(&mut self, conf_state: ConfState) -> Result<()> {
+        self.db.put(CONF_STATE_KEY, &proto_message_as_bytes(&conf_state)?)?;
+        self.conf_state = conf_state;
+        Ok(())
+    }
+
     /// Set the value for a key.
     pub fn set(&mut self, key: Vec<u8>, val: Vec<u8>) -> Result<()> {
         unimplemented!()
@@ -91,7 +105,7 @@ impl storage::Storage for Storage {
     }
 
     fn entries(&self, low: u64, high: u64, max_size: u64) -> raft::Result<Vec<Entry>> {
-        Ok(Vec::new())
+        unimplemented!()
     }
 
     fn term(&self, idx: u64) -> raft::Result<u64> {
