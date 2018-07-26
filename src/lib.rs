@@ -5,6 +5,10 @@ extern crate raft;
 extern crate rocksdb;
 extern crate tokio;
 extern crate protobuf;
+#[cfg(test)]
+extern crate tempdir;
+#[cfg(test)]
+extern crate rand;
 
 #[macro_use]
 mod error;

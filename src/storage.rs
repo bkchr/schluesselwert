@@ -3,8 +3,8 @@ use error::*;
 use raft::{
     self,
     eraftpb::{ConfState, Entry, HardState, Snapshot},
-    storage::{self, RaftState},
-    StorageError,
+    storage::RaftState,
+    Storage as RStorage, StorageError,
 };
 
 use rocksdb::{DBRawIterator, Options, DB};
@@ -52,7 +52,23 @@ impl Storage {
     fn insert_entry(&mut self, entry: &Entry) -> Result<()> {
         let key = get_key_for_entry_index(entry.index);
         let data = proto_message_as_bytes(entry)?;
-        self.db.put(&key, &data).map_err(|e| e.into())
+        self.db.put(&key, &data)?;
+
+        //TODO: Check that entries are unique.
+
+        match self.first_index {
+            Some(val) if val > entry.index => self.first_index = Some(entry.index),
+            None => self.first_index = Some(entry.index),
+            _ => {}
+        };
+
+        match self.last_index {
+            Some(val) if val < entry.index => self.last_index = Some(entry.index),
+            None => self.last_index = Some(entry.index),
+            _ => {}
+        };
+
+        Ok(())
     }
 
     /// Get an entry from the storage
@@ -67,14 +83,16 @@ impl Storage {
 
     /// Set the `HardState`.
     fn set_hard_state(&mut self, hard_state: HardState) -> Result<()> {
-        self.db.put(HARD_STATE_KEY, &proto_message_as_bytes(&hard_state)?)?;
+        self.db
+            .put(HARD_STATE_KEY, &proto_message_as_bytes(&hard_state)?)?;
         self.hard_state = hard_state;
         Ok(())
     }
 
     /// Set the `ConfState`.
     fn set_conf_state(&mut self, conf_state: ConfState) -> Result<()> {
-        self.db.put(CONF_STATE_KEY, &proto_message_as_bytes(&conf_state)?)?;
+        self.db
+            .put(CONF_STATE_KEY, &proto_message_as_bytes(&conf_state)?)?;
         self.conf_state = conf_state;
         Ok(())
     }
@@ -96,7 +114,7 @@ impl Storage {
     pub fn scan() {}
 }
 
-impl storage::Storage for Storage {
+impl RStorage for Storage {
     fn initial_state(&self) -> raft::Result<RaftState> {
         Ok(RaftState {
             hard_state: self.hard_state.clone(),
@@ -190,6 +208,8 @@ fn extract_hard_and_conf_state(db: &DB) -> Result<(HardState, ConfState)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::{self, Rng, RngCore};
+    use tempdir::TempDir;
 
     #[test]
     fn entry_key_to_bytes_and_back() {
@@ -229,5 +249,78 @@ mod tests {
         let bytes = proto_message_as_bytes(&entry).unwrap();
 
         assert_eq!(entry, proto_message_from_bytes(&bytes).unwrap());
+    }
+
+    fn create_random_entries(num: usize) -> Vec<Entry> {
+        let mut entries = Vec::with_capacity(num);
+
+        let mut rng = rand::thread_rng();
+        for i in 0..num {
+            let mut entry = Entry::new();
+            entry.index = i as u64;
+            entry.term = rng.gen();
+
+            let mut data = vec![0; 100];
+            rng.fill_bytes(&mut data);
+            entry.data = data;
+
+            entries.push(entry);
+        }
+
+        entries
+    }
+
+    #[test]
+    fn first_and_last_index_recreation() {
+        let entries = create_random_entries(100);
+        let dir = TempDir::new("first_last_recreation").unwrap();
+
+        {
+            let mut storage = Storage::new(&dir).unwrap();
+
+            entries
+                .into_iter()
+                .for_each(|e| storage.insert_entry(&e).unwrap());
+
+            assert_eq!(0, storage.first_index().unwrap());
+            assert_eq!(99, storage.last_index().unwrap());
+        }
+
+        {
+            // recreate the Storage
+            let mut storage = Storage::new(&dir).unwrap();
+
+            assert_eq!(0, storage.first_index().unwrap());
+            assert_eq!(99, storage.last_index().unwrap());
+        }
+    }
+
+    #[test]
+    fn hard_and_conf_state_recreation() {
+        let dir = TempDir::new("hard_conf_recreation").unwrap();
+        let mut hard_state = HardState::new();
+        hard_state.term = 456;
+        hard_state.vote = 10;
+        hard_state.commit = 40;
+
+        let mut conf_state = ConfState::new();
+        conf_state.nodes = vec![1, 2, 3, 4, 5];
+        conf_state.learners = vec![6, 7];
+
+        {
+            let mut storage = Storage::new(&dir).unwrap();
+            storage.set_hard_state(hard_state.clone()).unwrap();
+            storage.set_conf_state(conf_state.clone()).unwrap();
+
+            assert_eq!(storage.hard_state, hard_state);
+            assert_eq!(storage.conf_state, conf_state);
+        }
+
+        {
+            // recreate the Storage
+            let mut storage = Storage::new(&dir).unwrap();
+            assert_eq!(storage.hard_state, hard_state);
+            assert_eq!(storage.conf_state, conf_state);
+        }
     }
 }
