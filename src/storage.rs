@@ -28,15 +28,17 @@ pub struct Storage {
 
 impl Storage {
     /// Create a new `Storage` instance
-    fn new() -> Storage {}
+    fn new() -> Storage {unimplemented!()}
 
-    fn set_entry(&mut self, entry: &Entry) -> Result<()> {
+    /// Insert an entry into the storage
+    fn insert_entry(&mut self, entry: &Entry) -> Result<()> {
         let key = get_key_for_entry_index(entry.index);
         let data = get_entry_as_bytes(entry)?;
         self.db.put(&key, &data).map_err(|e| e.into())
     }
 
-    fn get_entry(&mut self, idx: u64) -> Result<Option<Entry>> {
+    /// Get an entry from the storage
+    fn get_entry(&self, idx: u64) -> Result<Option<Entry>> {
         let entry = self.db.get(&get_key_for_entry_index(idx))?;
 
         Ok(match entry {
@@ -45,12 +47,16 @@ impl Storage {
         })
     }
 
-    pub fn set(&mut self, key: Vec<u8>, val: Vec<u8>) -> Result<()> {}
+    /// Set the value for a key.
+    pub fn set(&mut self, key: Vec<u8>, val: Vec<u8>) -> Result<()> {unimplemented!()}
 
-    pub fn get(&mut self, key: Vec<u8>) -> Result<Vec<u8>> {}
+    /// Get the value for a key.
+    pub fn get(&mut self, key: Vec<u8>) -> Result<Vec<u8>> {unimplemented!()}
 
+    /// Delete the value for a key.
     pub fn delete(&mut self, key: &[u8]) {}
 
+    /// Scan for all keys.
     pub fn scan() {}
 }
 
@@ -84,7 +90,9 @@ impl storage::Storage for Storage {
         self.last_index.ok_or(StorageError::Unavailable.into())
     }
 
-    fn snapshot(&self) -> raft::Result<Snapshot> {}
+    fn snapshot(&self) -> raft::Result<Snapshot> {
+        unimplemented!()
+    }
 }
 
 fn get_key_for_entry_index(idx: u64) -> [u8; 9] {
@@ -98,12 +106,36 @@ fn get_entry_as_bytes(entry: &Entry) -> Result<Vec<u8>> {
     entry.write_to_bytes().map_err(|e| e.into())
 }
 
+fn get_entry_index_from_key(key: &[u8]) -> u64 {
+    LittleEndian::read_u64(&key[1..])
+}
+
 fn create_entry_from_bytes(data: &[u8]) -> Result<Entry> {
     let mut entry = Entry::new();
     entry.merge_from_bytes(data)?;
     Ok(entry)
 }
 
-fn get_entry_index_from_key(key: &[u8]) -> u64 {
-    LittleEndian::read_u64(&key[1..])
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn entry_key_to_bytes_and_back() {
+        let idx = 1000;
+        let key = get_key_for_entry_index(idx);
+         
+        assert_eq!(idx, get_entry_index_from_key(&key));
+    }
+
+    #[test]
+    fn entry_to_bytes_and_back() {
+        let mut entry = Entry::new();
+        entry.index = 1000;
+        entry.term = 5432;
+
+        let bytes = get_entry_as_bytes(&entry).unwrap();
+
+        assert_eq!(entry, create_entry_from_bytes(&bytes).unwrap());
+    }
 }
