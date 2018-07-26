@@ -7,11 +7,13 @@ use raft::{
     StorageError,
 };
 
-use rocksdb::DB;
+use rocksdb::{DBRawIterator, Options, DB};
 
 use byteorder::{ByteOrder, LittleEndian};
 
 use protobuf::Message;
+
+use std::path::Path;
 
 const HARD_STATE_KEY: &[u8] = &[0x1];
 const CONF_STATE_KEY: &[u8] = &[0x2];
@@ -28,12 +30,28 @@ pub struct Storage {
 
 impl Storage {
     /// Create a new `Storage` instance
-    fn new() -> Storage {unimplemented!()}
+    /// path - The path where the data of the Node is stored/should be stored.
+    fn new<T: AsRef<Path>>(path: T) -> Result<Storage> {
+        let mut options = Options::default();
+        options.create_if_missing(true);
+
+        let db = DB::open(&options, path)?;
+        let (first_index, last_index) = extract_first_and_last_index(&db)?;
+        let (hard_state, conf_state) = extract_hard_and_conf_state(&db)?;
+
+        Ok(Storage {
+            db,
+            first_index,
+            last_index,
+            hard_state,
+            conf_state,
+        })
+    }
 
     /// Insert an entry into the storage
     fn insert_entry(&mut self, entry: &Entry) -> Result<()> {
         let key = get_key_for_entry_index(entry.index);
-        let data = get_entry_as_bytes(entry)?;
+        let data = proto_message_as_bytes(entry)?;
         self.db.put(&key, &data).map_err(|e| e.into())
     }
 
@@ -42,16 +60,20 @@ impl Storage {
         let entry = self.db.get(&get_key_for_entry_index(idx))?;
 
         Ok(match entry {
-            Some(entry) => Some(create_entry_from_bytes(&entry)?),
+            Some(entry) => Some(proto_message_from_bytes(&entry)?),
             None => None,
         })
     }
 
     /// Set the value for a key.
-    pub fn set(&mut self, key: Vec<u8>, val: Vec<u8>) -> Result<()> {unimplemented!()}
+    pub fn set(&mut self, key: Vec<u8>, val: Vec<u8>) -> Result<()> {
+        unimplemented!()
+    }
 
     /// Get the value for a key.
-    pub fn get(&mut self, key: Vec<u8>) -> Result<Vec<u8>> {unimplemented!()}
+    pub fn get(&mut self, key: Vec<u8>) -> Result<Vec<u8>> {
+        unimplemented!()
+    }
 
     /// Delete the value for a key.
     pub fn delete(&mut self, key: &[u8]) {}
@@ -102,18 +124,53 @@ fn get_key_for_entry_index(idx: u64) -> [u8; 9] {
     key
 }
 
-fn get_entry_as_bytes(entry: &Entry) -> Result<Vec<u8>> {
-    entry.write_to_bytes().map_err(|e| e.into())
+fn get_entry_index_from_key(key: &[u8]) -> Result<u64> {
+    if key.len() != 9 || key[0] != ENTRY_KEY_PREFIX {
+        Err(Error::InvalidEntryIndexKey)?;
+    }
+
+    Ok(LittleEndian::read_u64(&key[1..]))
 }
 
-fn get_entry_index_from_key(key: &[u8]) -> u64 {
-    LittleEndian::read_u64(&key[1..])
+fn proto_message_as_bytes(msg: &Message) -> Result<Vec<u8>> {
+    msg.write_to_bytes().map_err(|e| e.into())
 }
 
-fn create_entry_from_bytes(data: &[u8]) -> Result<Entry> {
-    let mut entry = Entry::new();
-    entry.merge_from_bytes(data)?;
-    Ok(entry)
+fn proto_message_from_bytes<T: Message + Default>(data: &[u8]) -> Result<T> {
+    let mut msg = T::default();
+    msg.merge_from_bytes(data)?;
+    Ok(msg)
+}
+
+fn extract_first_and_last_index(db: &DB) -> Result<(Option<u64>, Option<u64>)> {
+    let mut itr: DBRawIterator = db.prefix_iterator(&[ENTRY_KEY_PREFIX]).into();
+
+    // If not valid -> new database
+    if !itr.valid() {
+        return Ok((None, None));
+    } else {
+        itr.seek_to_first();
+        let first = get_entry_index_from_key(&itr.key().unwrap())?;
+
+        itr.seek_to_last();
+        let last = get_entry_index_from_key(&itr.key().unwrap())?;
+
+        Ok((Some(first), Some(last)))
+    }
+}
+
+fn extract_hard_and_conf_state(db: &DB) -> Result<(HardState, ConfState)> {
+    let hard_state = match db.get(HARD_STATE_KEY)? {
+        Some(data) => proto_message_from_bytes(&data)?,
+        None => HardState::default(),
+    };
+
+    let conf_state = match db.get(CONF_STATE_KEY)? {
+        Some(data) => proto_message_from_bytes(&data)?,
+        None => ConfState::default(),
+    };
+
+    Ok((hard_state, conf_state))
 }
 
 #[cfg(test)]
@@ -124,8 +181,29 @@ mod tests {
     fn entry_key_to_bytes_and_back() {
         let idx = 1000;
         let key = get_key_for_entry_index(idx);
-         
-        assert_eq!(idx, get_entry_index_from_key(&key));
+
+        assert_eq!(idx, get_entry_index_from_key(&key).unwrap());
+    }
+
+    #[test]
+    fn entry_key_invalid_first_byte() {
+        let idx = 1000;
+        let mut key = get_key_for_entry_index(idx);
+        key[0] = 45;
+
+        assert_eq!(
+            Error::InvalidEntryIndexKey,
+            get_entry_index_from_key(&key).err().unwrap()
+        );
+    }
+
+    #[test]
+    fn entry_key_invalid_length() {
+        let key: &[u8] = &[0, 1, 2, 3];
+        assert_eq!(
+            Error::InvalidEntryIndexKey,
+            get_entry_index_from_key(&key).err().unwrap()
+        );
     }
 
     #[test]
@@ -134,8 +212,8 @@ mod tests {
         entry.index = 1000;
         entry.term = 5432;
 
-        let bytes = get_entry_as_bytes(&entry).unwrap();
+        let bytes = proto_message_as_bytes(&entry).unwrap();
 
-        assert_eq!(entry, create_entry_from_bytes(&bytes).unwrap());
+        assert_eq!(entry, proto_message_from_bytes(&bytes).unwrap());
     }
 }

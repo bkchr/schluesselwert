@@ -1,7 +1,7 @@
 use failure::{self, Fail};
 pub use failure::ResultExt;
 
-use std::result;
+use std::{mem, result };
 
 use rocksdb;
 
@@ -19,6 +19,14 @@ pub enum Error {
     Custom(failure::Error),
     #[fail(display = "Protobuf Error {}", _0)]
     Protobuf(protobuf::error::ProtobufError),
+    #[fail(display = "Invalid entry index key")]
+    InvalidEntryIndexKey,
+}
+
+impl PartialEq for Error {
+    fn eq(&self, other: &Self) -> bool {
+        mem::discriminant(self) == mem::discriminant(other)
+    }
 }
 
 impl From<Error> for raft::Error {
