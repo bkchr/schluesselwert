@@ -1,7 +1,12 @@
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
-    }
-}
+#[macro_use]
+extern crate failure;
+extern crate byteorder;
+extern crate raft;
+extern crate rocksdb;
+extern crate tokio;
+extern crate protobuf;
+
+#[macro_use]
+mod error;
+mod node;
+mod storage;
