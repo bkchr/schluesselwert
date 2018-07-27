@@ -1,7 +1,7 @@
-use failure::{self, Fail};
 pub use failure::ResultExt;
+use failure::{self, Fail};
 
-use std::{mem, result };
+use std::{mem, result};
 
 use rocksdb;
 
@@ -9,12 +9,18 @@ use protobuf;
 
 use raft;
 
+use bincode;
+
 pub type Result<T> = result::Result<T, Error>;
 
 #[derive(Debug, Fail)]
 pub enum Error {
     #[fail(display = "RocksDB Error {}", _0)]
     RocksDB(rocksdb::Error),
+    #[fail(display = "Bincode Error {}", _0)]
+    Bincode(bincode::Error),
+    #[fail(display = "Raft Error {}", _0)]
+    Raft(raft::Error),
     #[fail(display = "Error {}", _0)]
     Custom(failure::Error),
     #[fail(display = "Protobuf Error {}", _0)]
@@ -25,6 +31,8 @@ pub enum Error {
     InvalidDataKey,
     #[fail(display = "Index of out bounds")]
     IndexOutOfBounds,
+    #[fail(display = "Entry index is smaller than first index")]
+    EntryIndexSmallerThanFirst,
 }
 
 impl PartialEq for Error {
@@ -35,8 +43,11 @@ impl PartialEq for Error {
 
 impl From<Error> for raft::Error {
     fn from(err: Error) -> raft::Error {
-        // TODO: Hacky!
-        raft::StorageError::Other(Box::new(err.compat())).into()
+        match err {
+            Error::Raft(e) => e,
+            // TODO: Hacky!
+            e @ _ => raft::StorageError::Other(Box::new(e.compat())).into(),
+        }
     }
 }
 
@@ -49,6 +60,18 @@ impl From<failure::Error> for Error {
 impl From<rocksdb::Error> for Error {
     fn from(err: rocksdb::Error) -> Error {
         Error::RocksDB(err)
+    }
+}
+
+impl From<bincode::Error> for Error {
+    fn from(err: bincode::Error) -> Error {
+        Error::Bincode(err)
+    }
+}
+
+impl From<raft::StorageError> for Error {
+    fn from(err: raft::StorageError) -> Error {
+        Error::Raft(err.into())
     }
 }
 

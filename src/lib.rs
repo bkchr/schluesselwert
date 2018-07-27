@@ -1,14 +1,18 @@
 #[macro_use]
 extern crate failure;
+extern crate bincode;
 extern crate byteorder;
-extern crate raft;
-extern crate rocksdb;
-extern crate tokio;
 extern crate protobuf;
-#[cfg(test)]
-extern crate tempdir;
+extern crate raft;
 #[cfg(test)]
 extern crate rand;
+extern crate rocksdb;
+#[cfg(test)]
+extern crate tempdir;
+extern crate tokio;
+#[macro_use]
+extern crate serde_derive;
+extern crate serde;
 
 #[macro_use]
 mod error;
