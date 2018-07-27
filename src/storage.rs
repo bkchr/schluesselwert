@@ -123,7 +123,33 @@ impl RStorage for Storage {
     }
 
     fn entries(&self, low: u64, high: u64, max_size: u64) -> raft::Result<Vec<Entry>> {
-        unimplemented!()
+        if self.first_index.is_none() {
+            return Err(StorageError::Unavailable)?;
+        } else if high > self.last_index.unwrap() + 1 {
+            return Err(Error::IndexOutOfBounds)?;
+        }
+
+        let mut itr: DBRawIterator = self.db.prefix_iterator(&[ENTRY_KEY_PREFIX]).into();
+        let mut result = Vec::new();
+        let mut size = 0;
+
+        itr.seek(&get_key_for_entry_index(low));
+        while let (Some(key), Some(value)) = (itr.key(), itr.value()) {
+            if max_size != raft::NO_LIMIT
+                && !result.is_empty()
+                && size + value.len() > max_size as usize
+                || get_entry_index_from_key(&key)? >= high
+            {
+                break;
+            }
+
+            size += value.len();
+            let entry = proto_message_from_bytes(&value)?;
+            result.push(entry);
+            itr.next();
+        }
+
+        Ok(result)
     }
 
     fn term(&self, idx: u64) -> raft::Result<u64> {
@@ -321,6 +347,35 @@ mod tests {
             let mut storage = Storage::new(&dir).unwrap();
             assert_eq!(storage.hard_state, hard_state);
             assert_eq!(storage.conf_state, conf_state);
+        }
+    }
+
+    #[test]
+    fn entries_filter_with_no_limit() {
+        let entries = create_random_entries(100);
+        let dir = TempDir::new("entries_filter").unwrap();
+
+        {
+            let mut storage = Storage::new(&dir).unwrap();
+
+            entries
+                .iter()
+                .for_each(|e| storage.insert_entry(&e).unwrap());
+
+            assert_eq!(
+                &entries[40..50],
+                &storage.entries(40, 50, raft::util::NO_LIMIT).unwrap()[..]
+            );
+        }
+
+        {
+            // recreate the Storage
+            let storage = Storage::new(&dir).unwrap();
+
+            assert_eq!(
+                &entries[40..50],
+                &storage.entries(40, 50, raft::util::NO_LIMIT).unwrap()[..]
+            );
         }
     }
 }
