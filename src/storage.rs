@@ -148,6 +148,8 @@ impl RStorage for Storage {
 
         itr.seek(&get_key_for_entry_index(low));
         while let (Some(key), Some(value)) = (itr.key(), itr.value()) {
+            // Check if we are above the `max_size`, have at least one result and `NO_LIMIT` is not
+            // set. If the key is greater than the maximum requested, end it also.
             if max_size != raft::NO_LIMIT
                 && !result.is_empty()
                 && size + value.len() > max_size as usize
@@ -336,7 +338,7 @@ mod tests {
 
         {
             // recreate the Storage
-            let mut storage = Storage::new(&dir).unwrap();
+            let storage = Storage::new(&dir).unwrap();
 
             assert_eq!(0, storage.first_index().unwrap());
             assert_eq!(99, storage.last_index().unwrap());
@@ -366,7 +368,7 @@ mod tests {
 
         {
             // recreate the Storage
-            let mut storage = Storage::new(&dir).unwrap();
+            let storage = Storage::new(&dir).unwrap();
             assert_eq!(storage.hard_state, hard_state);
             assert_eq!(storage.conf_state, conf_state);
         }
@@ -399,5 +401,85 @@ mod tests {
                 &storage.entries(40, 50, raft::util::NO_LIMIT).unwrap()[..]
             );
         }
+    }
+
+    #[test]
+    fn entries_filter_with_with_limit() {
+        let entries = create_random_entries(100);
+        let dir = TempDir::new("entries_filter").unwrap();
+        let max_size = (entries.get(20).unwrap().compute_size()
+            + entries.get(21).unwrap().compute_size()) as u64 + 20;
+
+        {
+            let mut storage = Storage::new(&dir).unwrap();
+
+            entries
+                .iter()
+                .for_each(|e| storage.insert_entry(&e).unwrap());
+
+            assert_eq!(
+                &entries[20..22],
+                &storage.entries(20, 30, max_size).unwrap()[..]
+            );
+        }
+
+        {
+            // recreate the Storage
+            let storage = Storage::new(&dir).unwrap();
+
+            assert_eq!(
+                &entries[20..22],
+                &storage.entries(20, 30, max_size).unwrap()[..]
+            );
+        }
+    }
+
+    #[test]
+    fn entries_filter_with_with_small_limit() {
+        let entries = create_random_entries(100);
+        let dir = TempDir::new("entries_filter").unwrap();
+        let max_size = 20;
+
+        {
+            let mut storage = Storage::new(&dir).unwrap();
+
+            entries
+                .iter()
+                .for_each(|e| storage.insert_entry(&e).unwrap());
+
+            assert_eq!(
+                &entries[20..21],
+                &storage.entries(20, 30, max_size).unwrap()[..]
+            );
+        }
+
+        {
+            // recreate the Storage
+            let storage = Storage::new(&dir).unwrap();
+
+            assert_eq!(
+                &entries[20..21],
+                &storage.entries(20, 30, max_size).unwrap()[..]
+            );
+        }
+    }
+
+    #[test]
+    fn entries_filter_with_no_result() {
+        let entries = create_random_entries(100);
+        let dir = TempDir::new("entries_filter").unwrap();
+
+        let mut storage = Storage::new(&dir).unwrap();
+
+        entries
+            .iter()
+            .for_each(|e| storage.insert_entry(&e).unwrap());
+
+        assert!(
+            &storage
+                .entries(20, 20, raft::util::NO_LIMIT)
+                .unwrap()
+                .is_empty()
+        );
     }
 }
