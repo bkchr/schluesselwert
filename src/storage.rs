@@ -98,20 +98,33 @@ impl Storage {
     }
 
     /// Set the value for a key.
-    pub fn set(&mut self, key: Vec<u8>, val: Vec<u8>) -> Result<()> {
-        unimplemented!()
+    pub fn set<T: Into<Vec<u8>>>(&mut self, key: T, val: &[u8]) -> Result<()> {
+        let key = prefix_data_key(key);
+        self.db.put(&key, val).map_err(|e| e.into())
     }
 
     /// Get the value for a key.
-    pub fn get(&mut self, key: Vec<u8>) -> Result<Vec<u8>> {
-        unimplemented!()
+    pub fn get<T: Into<Vec<u8>>>(&self, key: T) -> Result<Option<Vec<u8>>> {
+        let key = prefix_data_key(key);
+        self.db
+            .get(&key)
+            .map_err(|e| e.into())
+            .map(|r| r.map(|v| v.to_vec()))
     }
 
     /// Delete the value for a key.
-    pub fn delete(&mut self, key: &[u8]) {}
+    pub fn delete<T: Into<Vec<u8>>>(&mut self, key: T) -> Result<()> {
+        let key = prefix_data_key(key);
+        self.db.delete(&key).map_err(|e| e.into())
+    }
 
     /// Scan for all keys.
-    pub fn scan() {}
+    pub fn scan(&self) -> Vec<Vec<u8>> {
+        self.db
+            .prefix_iterator(&[DATA_KEY_PREFIX])
+            .map(|v| v.0.to_vec())
+            .collect()
+    }
 }
 
 impl RStorage for Storage {
@@ -175,6 +188,14 @@ impl RStorage for Storage {
     }
 }
 
+/// Enriches the data key with the `DATA_KEY_PREFIX`
+fn prefix_data_key<T: Into<Vec<u8>>>(key: T) -> Vec<u8> {
+    let mut key: Vec<u8> = key.into();
+    key.insert(0, DATA_KEY_PREFIX);
+    key
+}
+
+/// Converts an entry index into key
 fn get_key_for_entry_index(idx: u64) -> [u8; 9] {
     let mut key = [0; 9];
     key[0] = ENTRY_KEY_PREFIX;
@@ -182,6 +203,7 @@ fn get_key_for_entry_index(idx: u64) -> [u8; 9] {
     key
 }
 
+/// Converts a key into an entry index
 fn get_entry_index_from_key(key: &[u8]) -> Result<u64> {
     if key.len() != 9 || key[0] != ENTRY_KEY_PREFIX {
         Err(Error::InvalidEntryIndexKey)?;
