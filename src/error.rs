@@ -21,6 +21,8 @@ pub enum Error {
     Protobuf(protobuf::error::ProtobufError),
     #[fail(display = "Invalid entry index key")]
     InvalidEntryIndexKey,
+    #[fail(display = "Invalid data key")]
+    InvalidDataKey,
     #[fail(display = "Index of out bounds")]
     IndexOutOfBounds,
 }

@@ -119,11 +119,13 @@ impl Storage {
     }
 
     /// Scan for all keys.
-    pub fn scan(&self) -> Vec<Vec<u8>> {
-        self.db
-            .prefix_iterator(&[DATA_KEY_PREFIX])
-            .map(|v| v.0.to_vec())
-            .collect()
+    pub fn scan(&self) -> Result<Vec<Vec<u8>>> {
+        let mut keys = Vec::new();
+        for (key, _) in self.db.prefix_iterator(&[DATA_KEY_PREFIX]) {
+            keys.push(remove_data_key_prefix(&key)?);
+        }
+
+        Ok(keys)
     }
 }
 
@@ -197,6 +199,15 @@ fn prefix_data_key<T: Into<Vec<u8>>>(key: T) -> Vec<u8> {
     key
 }
 
+/// Remove `DATA_KEY_PREFIX` from the given key.
+fn remove_data_key_prefix(key: &[u8]) -> Result<Vec<u8>> {
+    if key[0] != DATA_KEY_PREFIX {
+        Err(Error::InvalidDataKey)?;
+    }
+
+    Ok(key[1..].to_vec())
+}
+
 /// Converts an entry index into key
 fn get_key_for_entry_index(idx: u64) -> [u8; 9] {
     let mut key = [0; 9];
@@ -231,10 +242,9 @@ fn extract_first_and_last_index(db: &DB) -> Result<(Option<u64>, Option<u64>)> {
     if !itr.valid() {
         return Ok((None, None));
     } else {
-        itr.seek_to_first();
         let first = get_entry_index_from_key(&itr.key().unwrap())?;
 
-        itr.seek_to_last();
+        itr.seek_for_prev(&[DATA_KEY_PREFIX]);
         let last = get_entry_index_from_key(&itr.key().unwrap())?;
 
         Ok((Some(first), Some(last)))
@@ -259,6 +269,7 @@ fn extract_hard_and_conf_state(db: &DB) -> Result<(HardState, ConfState)> {
 mod tests {
     use super::*;
     use rand::{self, Rng, RngCore};
+    use std::collections::HashMap;
     use tempdir::TempDir;
 
     #[test]
@@ -287,6 +298,26 @@ mod tests {
         assert_eq!(
             Error::InvalidEntryIndexKey,
             get_entry_index_from_key(&key).err().unwrap()
+        );
+    }
+
+    #[test]
+    fn prefix_data_key_and_back() {
+        let data_key = vec![1, 2, 3, 4];
+        let key = prefix_data_key(data_key.clone());
+
+        assert_eq!(&data_key[..], &remove_data_key_prefix(&key).unwrap()[..]);
+    }
+
+    #[test]
+    fn prefix_data_key_invalid_first_byte() {
+        let data_key = vec![1, 2, 3, 4];
+        let mut key = prefix_data_key(data_key);
+        key[0] = 45;
+
+        assert_eq!(
+            Error::InvalidDataKey,
+            remove_data_key_prefix(&key).err().unwrap()
         );
     }
 
@@ -320,17 +351,49 @@ mod tests {
         entries
     }
 
+    fn create_random_data(num: usize) -> HashMap<Vec<u8>, Vec<u8>> {
+        let mut data = HashMap::new();
+
+        let mut rng = rand::thread_rng();
+        for _ in 0..num {
+            let mut key = vec![0; 50];
+            let mut value = vec![0; 200];
+
+            rng.fill_bytes(&mut key);
+            rng.fill_bytes(&mut value);
+
+            data.insert(key, value);
+        }
+
+        data
+    }
+
+    fn create_random_storage<T: AsRef<Path>>(
+        path: T,
+        num_entries: usize,
+        num_data: usize,
+    ) -> (Storage, Vec<Entry>, HashMap<Vec<u8>, Vec<u8>>) {
+        let entries = create_random_entries(num_entries);
+        let data = create_random_data(num_data);
+
+        let mut storage = Storage::new(path).unwrap();
+
+        entries
+            .iter()
+            .for_each(|e| storage.insert_entry(&e).unwrap());
+
+        data.iter()
+            .for_each(|(k, v)| storage.set(k.clone(), v).unwrap());
+
+        (storage, entries, data)
+    }
+
     #[test]
     fn first_and_last_index_recreation() {
-        let entries = create_random_entries(100);
         let dir = TempDir::new("first_last_recreation").unwrap();
 
         {
-            let mut storage = Storage::new(&dir).unwrap();
-
-            entries
-                .into_iter()
-                .for_each(|e| storage.insert_entry(&e).unwrap());
+            let (storage, _, _) = create_random_storage(&dir, 100, 100);
 
             assert_eq!(0, storage.first_index().unwrap());
             assert_eq!(99, storage.last_index().unwrap());
@@ -358,7 +421,7 @@ mod tests {
         conf_state.learners = vec![6, 7];
 
         {
-            let mut storage = Storage::new(&dir).unwrap();
+            let (mut storage, _, _) = create_random_storage(&dir, 100, 100);
             storage.set_hard_state(hard_state.clone()).unwrap();
             storage.set_conf_state(conf_state.clone()).unwrap();
 
@@ -371,26 +434,25 @@ mod tests {
             let storage = Storage::new(&dir).unwrap();
             assert_eq!(storage.hard_state, hard_state);
             assert_eq!(storage.conf_state, conf_state);
+            assert_eq!(0, storage.first_index().unwrap());
+            assert_eq!(99, storage.last_index().unwrap());
         }
     }
 
     #[test]
     fn entries_filter_with_no_limit() {
-        let entries = create_random_entries(100);
         let dir = TempDir::new("entries_filter").unwrap();
 
-        {
-            let mut storage = Storage::new(&dir).unwrap();
-
-            entries
-                .iter()
-                .for_each(|e| storage.insert_entry(&e).unwrap());
+        let entries = {
+            let (storage, entries, _) = create_random_storage(&dir, 100, 100);
 
             assert_eq!(
                 &entries[40..50],
                 &storage.entries(40, 50, raft::util::NO_LIMIT).unwrap()[..]
             );
-        }
+
+            entries
+        };
 
         {
             // recreate the Storage
@@ -400,28 +462,27 @@ mod tests {
                 &entries[40..50],
                 &storage.entries(40, 50, raft::util::NO_LIMIT).unwrap()[..]
             );
+            assert_eq!(0, storage.first_index().unwrap());
+            assert_eq!(99, storage.last_index().unwrap());
         }
     }
 
     #[test]
     fn entries_filter_with_with_limit() {
-        let entries = create_random_entries(100);
         let dir = TempDir::new("entries_filter").unwrap();
-        let max_size = (entries.get(20).unwrap().compute_size()
-            + entries.get(21).unwrap().compute_size()) as u64 + 20;
 
-        {
-            let mut storage = Storage::new(&dir).unwrap();
-
-            entries
-                .iter()
-                .for_each(|e| storage.insert_entry(&e).unwrap());
+        let (entries, max_size) = {
+            let (storage, entries, _) = create_random_storage(&dir, 100, 100);
+            let max_size = (entries.get(20).unwrap().compute_size()
+                + entries.get(21).unwrap().compute_size()) as u64 + 20;
 
             assert_eq!(
                 &entries[20..22],
                 &storage.entries(20, 30, max_size).unwrap()[..]
             );
-        }
+
+            (entries, max_size)
+        };
 
         {
             // recreate the Storage
@@ -436,22 +497,19 @@ mod tests {
 
     #[test]
     fn entries_filter_with_with_small_limit() {
-        let entries = create_random_entries(100);
         let dir = TempDir::new("entries_filter").unwrap();
         let max_size = 20;
 
-        {
-            let mut storage = Storage::new(&dir).unwrap();
-
-            entries
-                .iter()
-                .for_each(|e| storage.insert_entry(&e).unwrap());
+        let entries = {
+            let (storage, entries, _) = create_random_storage(&dir, 100, 100);
 
             assert_eq!(
                 &entries[20..21],
                 &storage.entries(20, 30, max_size).unwrap()[..]
             );
-        }
+
+            entries
+        };
 
         {
             // recreate the Storage
@@ -466,14 +524,9 @@ mod tests {
 
     #[test]
     fn entries_filter_with_no_result() {
-        let entries = create_random_entries(100);
         let dir = TempDir::new("entries_filter").unwrap();
 
-        let mut storage = Storage::new(&dir).unwrap();
-
-        entries
-            .iter()
-            .for_each(|e| storage.insert_entry(&e).unwrap());
+        let (storage, _, _) = create_random_storage(&dir, 100, 100);
 
         assert!(
             &storage
@@ -481,5 +534,95 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    fn check_data(
+        storage: &Storage,
+        data: &HashMap<Vec<u8>, Vec<u8>>,
+        skip: usize,
+        take: usize,
+        exist: bool,
+    ) {
+        data.iter().skip(skip).take(take).for_each(|(k, v)| {
+            if exist {
+                assert_eq!(&storage.get(k.clone()).unwrap().unwrap()[..], &v[..]);
+            } else {
+                assert_eq!(storage.get(k.clone()).unwrap(), None);
+            }
+        });
+    }
+
+    #[test]
+    fn get_data() {
+        let dir = TempDir::new("entries_filter").unwrap();
+
+        let data = {
+            let (storage, _, data) = create_random_storage(&dir, 100, 100);
+
+            check_data(&storage, &data, 0, 100, true);
+
+            data
+        };
+
+        {
+            // recreate the Storage
+            let storage = Storage::new(&dir).unwrap();
+
+            check_data(&storage, &data, 0, 100, true);
+        }
+    }
+
+    #[test]
+    fn delete_half() {
+        let dir = TempDir::new("entries_filter").unwrap();
+
+        let data = {
+            let (mut storage, _, data) = create_random_storage(&dir, 100, 100);
+
+            data.iter().take(50).for_each(|(k, _)| {
+                storage.delete(k.clone()).unwrap();
+            });
+
+            check_data(&storage, &data, 50, 50, true);
+            check_data(&storage, &data, 0, 50, false);
+
+            data
+        };
+
+        {
+            // recreate the Storage
+            let storage = Storage::new(&dir).unwrap();
+
+            check_data(&storage, &data, 50, 50, true);
+            check_data(&storage, &data, 0, 50, false);
+        }
+    }
+
+    #[test]
+    fn scan() {
+        let dir = TempDir::new("scan_all").unwrap();
+
+        let data = {
+            let (mut storage, _, data) = create_random_storage(&dir, 100, 100);
+
+            let keys = storage.scan().unwrap();
+            let mut data2 = data.clone();
+            keys.into_iter()
+                .for_each(|k| assert!(data2.remove(&k).is_some()));
+            assert!(data2.is_empty());
+
+            data
+        };
+
+        {
+            // recreate the Storage
+            let storage = Storage::new(&dir).unwrap();
+
+            let keys = storage.scan().unwrap();
+            let mut data2 = data.clone();
+            keys.into_iter()
+                .for_each(|k| assert!(data2.remove(&k).is_some()));
+            assert!(data2.is_empty());
+        }
     }
 }
