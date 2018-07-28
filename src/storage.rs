@@ -44,7 +44,7 @@ pub struct Storage {
 impl Storage {
     /// Create a new `Storage` instance
     /// path - The path where the data of the Node is stored/should be stored.
-    fn new<T: AsRef<Path>>(path: T) -> Result<Storage> {
+    pub fn new<T: AsRef<Path>>(path: T) -> Result<Storage> {
         let mut options = Options::default();
         options.create_if_missing(true);
 
@@ -77,7 +77,7 @@ impl Storage {
     }
 
     /// Append a list of entries.
-    fn append_entries(&mut self, entries: &[Entry]) -> Result<()> {
+    pub fn append_entries(&mut self, entries: &[Entry]) -> Result<()> {
         let last_index = self.last_index;
 
         entries.iter().try_for_each(|e| self.append_entry(e))?;
