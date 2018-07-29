@@ -14,7 +14,8 @@ bincode = "1.0.1"
 serde_derive = "1.0.70"
 serde = "1.0.70"
 futures = "0.1"
-tokio-timer = "0.2.4"
+bytes = "0.4.9"
+tokio-io = "0.1.7"
 
 [dev-dependencies]
 tempdir = "0.3.7"

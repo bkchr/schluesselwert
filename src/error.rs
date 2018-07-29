@@ -1,7 +1,7 @@
 pub use failure::ResultExt;
 use failure::{self, Fail};
 
-use std::{mem, result};
+use std::{mem, result, io};
 
 use rocksdb;
 
@@ -11,12 +11,18 @@ use raft;
 
 use bincode;
 
+use tokio::timer;
+
 pub type Result<T> = result::Result<T, Error>;
 
 #[derive(Debug, Fail)]
 pub enum Error {
+    #[fail(display = "IO Error {}", _0)]
+    Io(io::Error),
     #[fail(display = "RocksDB Error {}", _0)]
     RocksDB(rocksdb::Error),
+    #[fail(display = "Tokio Timer Error {}", _0)]
+    TokioTimer(timer::Error),
     #[fail(display = "Bincode Error {}", _0)]
     Bincode(bincode::Error),
     #[fail(display = "Raft Error {}", _0)]
@@ -57,6 +63,12 @@ impl From<failure::Error> for Error {
     }
 }
 
+impl From<io::Error> for Error {
+    fn from(err: io::Error) -> Error {
+        Error::Io(err)
+    }
+}
+
 impl From<rocksdb::Error> for Error {
     fn from(err: rocksdb::Error) -> Error {
         Error::RocksDB(err)
@@ -72,6 +84,18 @@ impl From<bincode::Error> for Error {
 impl From<raft::StorageError> for Error {
     fn from(err: raft::StorageError) -> Error {
         Error::Raft(err.into())
+    }
+}
+
+impl From<raft::Error> for Error {
+    fn from(err: raft::Error) -> Error {
+        Error::Raft(err.into())
+    }
+}
+
+impl From<timer::Error> for Error {
+    fn from(err: timer::Error) -> Error {
+        Error::TokioTimer(err.into())
     }
 }
 

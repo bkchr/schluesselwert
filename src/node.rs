@@ -1,18 +1,18 @@
 use error::*;
 use storage::Storage;
 
-use raft::{self, raw_node::RawNode, Config, Peer};
+use raft::{self, eraftpb::EntryType, raw_node::RawNode, Config, Peer};
 
 use std::{
     path::Path,
     time::{Duration, Instant},
 };
 
-use tokio_timer::Interval;
+use tokio::timer::Interval;
 
-use futures::{Future, Poll};
+use futures::{Future, Poll, Stream};
 
-struct Node {
+pub struct Node {
     node: RawNode<Storage>,
     timer: Interval,
 }
@@ -39,16 +39,29 @@ impl Node {
     fn process_ready(&mut self) {
         let mut ready = self.node.ready();
 
+        if self.is_leader() {
+            let msgs = ready.messages.drain(..);
+            for _msg in msgs {
+                // Here we only have one peer, so can ignore this.
+            }
+        }
+
         if !raft::is_empty_snap(&ready.snapshot) {
-            self.node.mut_store().apply_snapshot(&ready.snapshot).unwrap();
+            self.node
+                .mut_store()
+                .apply_snapshot(&ready.snapshot)
+                .unwrap();
         }
 
         if !ready.entries.is_empty() {
-            self.node.mut_store().append_entries(&ready.entries).unwrap();
+            self.node
+                .mut_store()
+                .append_entries(&ready.entries)
+                .unwrap();
         }
 
         if let Some(ref hs) = ready.hs {
-            self.node.mut_store().set_hardstate(hs.clone());
+            self.node.mut_store().set_hard_state(hs.clone()).unwrap();
         }
 
         if !self.is_leader() {
@@ -58,7 +71,20 @@ impl Node {
             for _msg in msgs {
                 // Send messages to other peers.
             }
-}
+        }
+
+        if let Some(committed_entries) = ready.committed_entries.take() {
+            for entry in committed_entries {
+                if entry.get_data().is_empty() {
+                    // Emtpy entry, when the peer becomes Leader it will send an empty entry.
+                    continue;
+                }
+
+                if entry.get_entry_type() == EntryType::EntryNormal {}
+            }
+        }
+
+        self.node.advance(ready);
     }
 
     fn is_leader(&self) -> bool {

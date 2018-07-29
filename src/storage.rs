@@ -103,7 +103,7 @@ impl Storage {
     }
 
     /// Set the `HardState`.
-    fn set_hard_state(&mut self, hard_state: HardState) -> Result<()> {
+    pub fn set_hard_state(&mut self, hard_state: HardState) -> Result<()> {
         self.db
             .put(HARD_STATE_KEY, &proto_message_as_bytes(&hard_state)?)?;
         self.hard_state = hard_state;
@@ -175,7 +175,7 @@ impl Storage {
     }
 
     /// Apply the given `Snapshot`.
-    fn apply_snapshot(&mut self, snapshot: &Snapshot) -> Result<()> {
+    pub fn apply_snapshot(&mut self, snapshot: &Snapshot) -> Result<()> {
         let last_applied_index = snapshot.get_metadata().get_index();
         let term = snapshot.get_metadata().get_term();
         let conf_state = snapshot.get_metadata().get_conf_state();
@@ -787,7 +787,7 @@ mod tests {
     #[test]
     fn append_entries_overwrite() {
         let dir = TempDir::new("append_overwrite").unwrap();
-        let (mut storage, entries, _) = create_random_storage(&dir, 200, 100);
+        let (mut storage, _, _) = create_random_storage(&dir, 200, 100);
 
         assert!(storage.get_entry(150).unwrap().is_some());
 
@@ -811,7 +811,7 @@ mod tests {
     fn snapshot_create_and_apply() {
         let dir0 = TempDir::new("snapshot_0").unwrap();
         let dir1 = TempDir::new("snapshot_1").unwrap();
-        let (mut storage, _, data) = create_random_storage(&dir0, 100, 100);
+        let (storage, _, data) = create_random_storage(&dir0, 100, 100);
         assert_eq!(100, storage.last_applied_index);
         assert!(storage.get_entry(50).unwrap().is_some());
 
@@ -838,7 +838,7 @@ mod tests {
     fn snapshot_create_and_apply_with_overwrite() {
         let dir0 = TempDir::new("snapshot_0").unwrap();
         let dir1 = TempDir::new("snapshot_1").unwrap();
-        let (mut storage, _, data) = create_random_storage(&dir0, 100, 100);
+        let (storage, _, data) = create_random_storage(&dir0, 100, 100);
         assert_eq!(100, storage.last_applied_index);
         assert!(storage.get_entry(50).unwrap().is_some());
 
