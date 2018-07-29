@@ -148,8 +148,9 @@ mod tests {
         });
 
         let addr = recv.recv_timeout(Duration::from_secs(1)).unwrap();
-        let msg = Protocol::Get {
-            key: vec![0, 1, 2, 3, 5, 6],
+        let msg = Protocol::Request {
+            id: 0,
+            data: vec![0, 1, 2, 3, 5, 6],
         };
         let (msgr, c, msg) = current_thread::block_on_all(
             TcpStream::connect(&addr)
@@ -168,7 +169,10 @@ mod tests {
         let (res, con) = current_thread::block_on_all(c.into_future().map_err(|e| e.0)).unwrap();
         assert_eq!(None, res);
 
-        let res = current_thread::block_on_all(con.send(Protocol::Delete { key: vec![1, 2] }));
+        let res = current_thread::block_on_all(con.send(Protocol::Request {
+            id: 0,
+            data: vec![1, 2],
+        }));
         assert!(res.is_err());
     }
 }
