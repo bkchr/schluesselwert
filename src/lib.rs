@@ -4,7 +4,6 @@ extern crate bincode;
 extern crate byteorder;
 extern crate protobuf;
 extern crate raft;
-#[cfg(test)]
 extern crate rand;
 extern crate rocksdb;
 #[cfg(test)]
@@ -26,3 +25,4 @@ mod node;
 mod peer_connections;
 mod storage;
 mod protocol;
+mod incoming_connections;

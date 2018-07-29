@@ -16,6 +16,8 @@ use bincode;
 
 use byteorder::{BigEndian, ByteOrder};
 
+use rand::{self, Rng};
+
 pub struct Connection {
     stream: TcpStream,
     buf: Vec<u8>,
@@ -168,5 +170,19 @@ mod tests {
 
         let res = current_thread::block_on_all(con.send(Protocol::Delete { key: vec![1, 2] }));
         assert!(res.is_err());
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize, Eq, Hash)]
+pub struct ConnectionIdentifier {
+    id: u64,
+}
+
+impl ConnectionIdentifier {
+    pub fn new() -> ConnectionIdentifier {
+        //TODO: Make sure that the id is unique!
+        ConnectionIdentifier {
+            id: rand::thread_rng().gen(),
+        }
     }
 }

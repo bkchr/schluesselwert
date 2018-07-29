@@ -1,28 +1,28 @@
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub enum Protocol {
-    Set {
-        key: Vec<u8>,
-        value: Vec<u8>,
-    },
-    Get {
-        key: Vec<u8>,
-    },
-    Delete {
-        key: Vec<u8>,
-    },
+    Request { id: u64, data: Vec<u8> },
+    RequestResult { id: u64, res: RequestResult },
+    Raft { msg: Vec<u8> },
+}
+
+/// The requests to the store.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub enum Request {
+    /// Set a key and value.
+    Set { key: Vec<u8>, value: Vec<u8> },
+    /// Get a value.
+    Get { key: Vec<u8> },
+    /// Delete a key and value.
+    Delete { key: Vec<u8> },
+    /// Scan for all keys.
     Scan,
-    /// The result of a `Set`, `Get` or `Delete` operation.
-    Result {
-        /// Was the operation successful?
-        successful: bool,
-        /// The requested value of the `Get` operation.
-        value: Option<Vec<u8>>,
-    },
-    /// The result of a scan operation.
-    ScanResult {
-        keys: Vec<Vec<u8>>,
-    },
-    Raft {
-        msg: Vec<u8>,
-    },
+}
+
+/// The results to the requests.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub enum RequestResult {
+    Set { successful: bool },
+    Get { value: Option<Vec<u8>> },
+    Delete { successful: bool },
+    Scan { keys: Option<Vec<Vec<u8>>> },
 }

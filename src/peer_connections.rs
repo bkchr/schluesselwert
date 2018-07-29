@@ -25,6 +25,8 @@ use tokio::{
 
 use protobuf::Message;
 
+/// Builds a connection to a peer. If the peer is not reachable, the connection will be retried
+/// after 500ms.
 struct BuildingConnection {
     peer_id: u64,
     peer_addr: SocketAddr,
@@ -78,7 +80,7 @@ impl Future for BuildingConnection {
 
 /// Stores all outgoing connections to other peers.
 /// If a connection to a peer is lost, the connection will be reestablished.
-struct PeerConnections {
+pub struct PeerConnections {
     connections: HashMap<u64, Connection>,
     building_connections: FuturesUnordered<BuildingConnection>,
     peers: HashMap<u64, Peer>,
