@@ -62,7 +62,7 @@ pub struct Node {
 }
 
 impl Node {
-    fn new<T: AsRef<Path>>(
+    pub fn new<T: AsRef<Path>>(
         id: u64,
         peers: Vec<Peer>,
         listen_port: u16,

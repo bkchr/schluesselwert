@@ -13,16 +13,18 @@ extern crate tokio;
 extern crate serde_derive;
 #[macro_use]
 extern crate futures;
-extern crate serde;
 extern crate bytes;
+extern crate serde;
 #[macro_use]
 extern crate tokio_io;
 
 #[macro_use]
 mod error;
 mod connection;
+mod incoming_connections;
 mod node;
 mod peer_connections;
-mod storage;
 mod protocol;
-mod incoming_connections;
+mod storage;
+
+pub use node::{Node, Peer};
