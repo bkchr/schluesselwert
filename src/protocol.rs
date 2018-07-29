@@ -1,8 +1,13 @@
+use std::net::SocketAddr;
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub enum Protocol {
     Request { id: u64, data: Vec<u8> },
     RequestResult { id: u64, res: RequestResult },
     Raft { msg: Vec<u8> },
+    /// The Node is not the leader.
+    /// `leader_addr` is the address of the leader (if known).
+    NotLeader { leader_addr: Option<SocketAddr> },
 }
 
 /// The requests to the store.

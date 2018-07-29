@@ -131,6 +131,13 @@ impl PeerConnections {
             self.connections.insert(peer, connection);
         }
     }
+
+    /// Returns the known address of a peer.
+    pub fn get_addr_of_peer(&self, peer: u64) -> Option<SocketAddr> {
+        self.peers
+            .get(&peer)
+            .map(|p| bincode::deserialize(&p.context.as_ref().unwrap()).unwrap())
+    }
 }
 
 impl Future for PeerConnections {

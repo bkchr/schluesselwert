@@ -214,9 +214,19 @@ impl Node {
                     self.node.step(msg).expect("step");
                 }
                 NodeMessage::Propose { id, req, response } => {
-                    // TODO: Make sure that we do not overwrite anything!
-                    self.request_response.insert(id, response);
-                    self.node.propose(bincode::serialize(&id).unwrap(), req).expect("propose");
+                    if self.is_leader() {
+                        // TODO: Make sure that we do not overwrite anything!
+                        self.request_response.insert(id, response);
+                        self.node
+                            .propose(bincode::serialize(&id).unwrap(), req)
+                            .expect("propose");
+                    } else {
+                        let _ = response.unbounded_send(Protocol::NotLeader {
+                            leader_addr: self
+                                .peer_connections
+                                .get_addr_of_peer(self.node.raft.leader_id),
+                        });
+                    }
                 }
             }
         }
