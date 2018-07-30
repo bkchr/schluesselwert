@@ -148,6 +148,11 @@ impl ClusterConnection {
     ///          nodes list.
     fn connect_to_cluster(&mut self, leader: Option<SocketAddr>) {
         let addr = if let Some(ref leader) = leader {
+            // Add leader to nodes list, if it was not known before.
+            if !self.nodes.contains(leader) {
+                self.nodes.push(leader.clone());
+            }
+
             leader
         } else {
             rand::thread_rng().choose(&self.nodes).unwrap()
