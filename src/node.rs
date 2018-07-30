@@ -23,7 +23,7 @@ use tokio::timer::Interval;
 
 use futures::{
     sync::mpsc::{unbounded, UnboundedReceiver, UnboundedSender},
-    Future, Poll, Stream,
+    Async, Future, Poll, Stream,
 };
 
 use bincode;
@@ -59,6 +59,7 @@ pub struct Node {
     recv_msgs: UnboundedReceiver<NodeMessage>,
     request_response: HashMap<RequestIdentifier, UnboundedSender<Protocol>>,
     peer_connections: PeerConnections,
+    incoming_connections: IncomingConnections,
 }
 
 impl Node {
@@ -77,10 +78,16 @@ impl Node {
             peers.iter().map(|p| p.clone().into()).collect(),
         )?;
         let timer = Interval::new(Instant::now(), Duration::from_millis(100));
-        let peer_connections = PeerConnections::new(peers.into_iter().map(|p| p.into()).collect());
+        let peer_connections = PeerConnections::new(
+            peers
+                .into_iter()
+                .filter(|p| p.0.id != id)
+                .map(|p| p.into())
+                .collect(),
+        );
         let (sender, recv_msgs) = unbounded();
 
-        IncomingConnections::create_and_spawn(listen_port, sender)?;
+        let incoming_connections = IncomingConnections::new(listen_port, sender)?;
 
         Ok(Node {
             node,
@@ -88,6 +95,7 @@ impl Node {
             recv_msgs,
             request_response: HashMap::new(),
             peer_connections,
+            incoming_connections,
         })
     }
 
@@ -231,6 +239,11 @@ impl Node {
             }
         }
     }
+
+    /// Returns the id of the leader.
+    pub fn get_leader_id(&self) -> u64 {
+        self.node.raft.leader_id
+    }
 }
 
 impl Future for Node {
@@ -239,6 +252,12 @@ impl Future for Node {
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         loop {
+            match self.incoming_connections.poll() {
+                Ok(Async::Ready(())) => panic!("IncomingConnections ended!"),
+                Err(e) => panic!("IncomingConnections ended with: {:?}", e),
+                _ => {}
+            };
+
             let _ = self.peer_connections.poll();
             let _ = self.poll_recv_msgs();
 

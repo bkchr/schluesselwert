@@ -110,6 +110,20 @@ impl Sink for Connection {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize, Eq, Hash)]
+pub struct ConnectionIdentifier {
+    id: u64,
+}
+
+impl ConnectionIdentifier {
+    pub fn new() -> ConnectionIdentifier {
+        //TODO: Make sure that the id is unique!
+        ConnectionIdentifier {
+            id: rand::thread_rng().gen(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,19 +188,5 @@ mod tests {
             data: vec![1, 2],
         }));
         assert!(res.is_err());
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Serialize, Deserialize, Eq, Hash)]
-pub struct ConnectionIdentifier {
-    id: u64,
-}
-
-impl ConnectionIdentifier {
-    pub fn new() -> ConnectionIdentifier {
-        //TODO: Make sure that the id is unique!
-        ConnectionIdentifier {
-            id: rand::thread_rng().gen(),
-        }
     }
 }

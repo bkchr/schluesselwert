@@ -1,7 +1,7 @@
 pub use failure::ResultExt;
 use failure::{self, Fail};
 
-use std::{mem, result, io};
+use std::{io, mem, result};
 
 use rocksdb;
 

@@ -25,22 +25,17 @@ pub struct IncomingConnections {
 }
 
 impl IncomingConnections {
-    pub fn create_and_spawn(
+    pub fn new(
         listen_port: u16,
         msg_sender: UnboundedSender<NodeMessage>,
-    ) -> Result<()> {
+    ) -> Result<IncomingConnections> {
         let listener = TcpListener::bind(&([0, 0, 0, 0], listen_port).into())?;
         let incoming = listener.incoming();
 
-        // TODO: Make sure that the program exits when `IncomingConnections` are closed!
-        tokio::spawn(
-            IncomingConnections {
-                incoming,
-                msg_sender,
-            }.map(|v| panic!(v))
-                .map_err(|e| panic!(e)),
-        );
-        Ok(())
+        Ok(IncomingConnections {
+            incoming,
+            msg_sender,
+        })
     }
 }
 
@@ -108,7 +103,9 @@ impl IncomingConnection {
                 let mut new_msg = Message::default();
                 new_msg.merge_from_bytes(&msg).unwrap();
 
-                let _ = self.msg_sender.unbounded_send(NodeMessage::Raft { msg: new_msg });
+                let _ = self
+                    .msg_sender
+                    .unbounded_send(NodeMessage::Raft { msg: new_msg });
             }
             _ => {}
         }
