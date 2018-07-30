@@ -296,6 +296,11 @@ impl Peer {
             context: Some(addr),
         })
     }
+
+    /// Returns the id of the `Peer`.
+    pub fn get_id(&self) -> u64 {
+        self.0.id
+    }
 }
 
 impl Into<raft::Peer> for Peer {
