@@ -72,6 +72,11 @@ impl Connection {
             }
         }
     }
+
+    /// Returns if the underlying TCPStream is writeable.
+    pub fn poll_writeable(&mut self) -> bool {
+        self.stream.poll_write_ready().map(|r| r.is_ready()).unwrap_or(false)
+    }
 }
 
 impl Stream for Connection {
@@ -94,6 +99,7 @@ impl Sink for Connection {
     type SinkError = Error;
 
     fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
+        // TODO: handle to much data!
         let buf = bincode::serialize(&item)?;
 
         let mut len: [u8; 2] = [0; 2];

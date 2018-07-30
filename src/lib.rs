@@ -20,6 +20,7 @@ extern crate tokio_io;
 
 #[macro_use]
 mod error;
+mod client;
 mod connection;
 mod incoming_connections;
 mod node;
@@ -28,3 +29,4 @@ mod protocol;
 mod storage;
 
 pub use node::{Node, Peer};
+pub use client::Client;

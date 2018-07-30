@@ -1,3 +1,5 @@
+use protocol::RequestResult;
+
 pub use failure::ResultExt;
 use failure::{self, Fail};
 
@@ -12,6 +14,8 @@ use raft;
 use bincode;
 
 use tokio::timer;
+
+use futures;
 
 pub type Result<T> = result::Result<T, Error>;
 
@@ -39,6 +43,12 @@ pub enum Error {
     IndexOutOfBounds,
     #[fail(display = "Entry index is smaller than first index")]
     EntryIndexSmallerThanFirst,
+    #[fail(display = "Incorrect RequestResult({:?}) for a Request", _0)]
+    IncorrectRequestResult(RequestResult),
+    #[fail(display = "Request not successful")]
+    RequestNotSuccessful,
+    #[fail(display = "Request canceled")]
+    RequestCanceled,
 }
 
 impl PartialEq for Error {
@@ -96,6 +106,12 @@ impl From<raft::Error> for Error {
 impl From<timer::Error> for Error {
     fn from(err: timer::Error) -> Error {
         Error::TokioTimer(err.into())
+    }
+}
+
+impl From<futures::Canceled> for Error {
+    fn from(_: futures::Canceled) -> Error {
+        Error::RequestCanceled
     }
 }
 
