@@ -81,7 +81,7 @@ fn with_one_node() {
     });
 
     let node_sender = receiver.recv_timeout(Duration::from_millis(500)).unwrap();
-    thread::sleep(Duration::from_secs(4));
+    thread::sleep(Duration::from_secs(2));
 
     let (sender, receiver) = unbounded();
     node_sender

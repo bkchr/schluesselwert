@@ -208,6 +208,11 @@ impl Storage {
             .try_for_each(|(k, _)| self.db.delete(&k))
             .map_err(|e| e.into())
     }
+
+    /// Returns the index of the last applied entry.
+    pub fn get_last_applied_index(&self) -> u64 {
+        self.last_applied_index
+    }
 }
 
 impl RStorage for Storage {

@@ -70,8 +70,19 @@ impl Node {
         storage_path: T,
     ) -> Result<Node> {
         let storage = Storage::new(storage_path)?;
-        // TODO: Check config values!
-        let config = Config::new(id);
+        let config = Config {
+            // The unique ID for the Raft node.
+            id,
+            peers: vec![],
+            election_tick: 10,
+            heartbeat_tick: 3,
+            max_size_per_msg: 1024 * 1024 * 1024,
+            max_inflight_msgs: 256,
+            applied: storage.get_last_applied_index(),
+            tag: format!("[node {}]", id),
+            ..Default::default()
+        };
+
         let node = RawNode::new(
             &config,
             storage,
