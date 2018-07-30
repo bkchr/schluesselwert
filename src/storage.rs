@@ -243,6 +243,7 @@ impl RStorage for Storage {
             if max_size != raft::NO_LIMIT
                 && !result.is_empty()
                 && size + value.len() > max_size as usize
+                || key[0] != ENTRY_KEY_PREFIX
                 || get_entry_index_from_key(&key)? >= high
             {
                 break;
@@ -612,13 +613,42 @@ mod tests {
     }
 
     #[test]
+    fn entries_filter_with_no_limit_and_upper_bound_max() {
+        let dir = TempDir::new("entries_filter").unwrap();
+
+        let entries = {
+            let (storage, entries, _) = create_random_storage(&dir, 100, 100);
+
+            assert_eq!(
+                &entries[22..100],
+                &storage.entries(23, 101, raft::util::NO_LIMIT).unwrap()[..]
+            );
+
+            entries
+        };
+
+        {
+            // recreate the Storage
+            let storage = Storage::new(&dir).unwrap();
+
+            assert_eq!(
+                &entries[22..100],
+                &storage.entries(23, 101, raft::util::NO_LIMIT).unwrap()[..]
+            );
+            assert_eq!(1, storage.first_index().unwrap());
+            assert_eq!(100, storage.last_index().unwrap());
+        }
+    }
+
+    #[test]
     fn entries_filter_with_with_limit() {
         let dir = TempDir::new("entries_filter").unwrap();
 
         let (entries, max_size) = {
             let (storage, entries, _) = create_random_storage(&dir, 100, 100);
             let max_size = (entries.get(20).unwrap().compute_size()
-                + entries.get(21).unwrap().compute_size()) as u64 + 20;
+                + entries.get(21).unwrap().compute_size()) as u64
+                + 20;
 
             assert_eq!(
                 &entries[19..21],
