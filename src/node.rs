@@ -244,6 +244,11 @@ impl Node {
     pub fn get_leader_id(&self) -> u64 {
         self.node.raft.leader_id
     }
+
+    /// Returns the id of this `Node`.
+    pub fn get_id(&self) -> u64 {
+        self.node.raft.id
+    }
 }
 
 impl Future for Node {
