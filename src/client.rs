@@ -192,8 +192,7 @@ impl ClusterConnection {
                     .start_send(Protocol::Request {
                         id: *k,
                         data: v.clone(),
-                    })
-                    .map(|_| ())
+                    }).map(|_| ())
             })
         }
 
@@ -300,5 +299,269 @@ impl Future for ClusterConnection {
                 self.connect_to_cluster(None);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use incoming_connections::IncomingConnections;
+    use node::NodeMessage;
+    use tokio::executor::current_thread;
+
+    struct FakeNode<F: Fn(NodeMessage) + Send> {
+        recv_msg: UnboundedReceiver<NodeMessage>,
+        incoming_connections: IncomingConnections,
+        callback: Box<F>,
+    }
+
+    impl<F: Fn(NodeMessage) + Send + 'static> FakeNode<F> {
+        fn create_and_run(listen_port: u16, callback: F) {
+            thread::spawn(move || {
+                let (sender, recv_msg) = unbounded();
+                let incoming_connections = IncomingConnections::new(listen_port, sender).unwrap();
+                let node = FakeNode {
+                    recv_msg,
+                    incoming_connections,
+                    callback: Box::new(callback),
+                };
+                tokio::run(node);
+            });
+        }
+    }
+
+    impl<F: Fn(NodeMessage) + Send> Future for FakeNode<F> {
+        type Item = ();
+        type Error = ();
+
+        fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+            let _ = self.incoming_connections.poll();
+
+            loop {
+                match self.recv_msg.poll().unwrap() {
+                    Ready(Some(msg)) => (self.callback)(msg),
+                    Ready(None) => panic!("FakeNode::poll() - None!"),
+                    NotReady => return Ok(NotReady),
+                }
+            }
+        }
+    }
+
+    fn create_node_addresses(ports: Vec<u16>) -> Vec<SocketAddr> {
+        ports
+            .into_iter()
+            .map(|port| ([127, 0, 0, 1], port).into())
+            .collect()
+    }
+
+    #[test]
+    fn client_finds_valid_node() {
+        let fake_node_port = 20344;
+        FakeNode::create_and_run(fake_node_port, |msg| match msg {
+            NodeMessage::Propose { id, response, .. } => response
+                .unbounded_send(Protocol::RequestResult {
+                    id: id.get_client_request_id(),
+                    res: RequestResult::Get {
+                        value: Some(vec![1]),
+                    },
+                }).unwrap(),
+            _ => panic!("unexpected message!"),
+        });
+
+        let nodes =
+            create_node_addresses(vec![fake_node_port, fake_node_port + 1, fake_node_port + 2]);
+
+        for _ in 0..10 {
+            let mut client = Client::new(nodes.clone());
+            let res = client.get(vec![1]);
+            let res: Vec<u8> = current_thread::block_on_all(res).unwrap().unwrap();
+            assert_eq!(&[1], &res[..]);
+        }
+    }
+
+    #[test]
+    fn client_reconnects_to_leader_hint() {
+        let fake_node_port = 20354;
+        let fake_node_leader_port = 20355;
+        let fake_node_leader_addr: SocketAddr = ([127, 0, 0, 1], fake_node_leader_port).into();
+
+        // start node that redirects to leader
+        FakeNode::create_and_run(fake_node_port, move |msg| match msg {
+            NodeMessage::Propose { response, .. } => response
+                .unbounded_send(Protocol::NotLeader {
+                    leader_addr: Some(fake_node_leader_addr),
+                }).unwrap(),
+            _ => panic!("unexpected message!"),
+        });
+
+        // start leader node
+        FakeNode::create_and_run(fake_node_leader_port, |msg| match msg {
+            NodeMessage::Propose { id, response, .. } => response
+                .unbounded_send(Protocol::RequestResult {
+                    id: id.get_client_request_id(),
+                    res: RequestResult::Get {
+                        value: Some(vec![1]),
+                    },
+                }).unwrap(),
+            _ => panic!("unexpected message!"),
+        });
+
+        // do not give leader address
+        let nodes = create_node_addresses(vec![fake_node_port]);
+
+        for _ in 0..10 {
+            let mut client = Client::new(nodes.clone());
+            let res = client.get(vec![1]);
+            let res: Vec<u8> = current_thread::block_on_all(res).unwrap().unwrap();
+            assert_eq!(&[1], &res[..]);
+        }
+    }
+
+    #[test]
+    fn client_get_returns_none() {
+        let fake_node_port = 20350;
+        FakeNode::create_and_run(fake_node_port, |msg| match msg {
+            NodeMessage::Propose { id, response, .. } => response
+                .unbounded_send(Protocol::RequestResult {
+                    id: id.get_client_request_id(),
+                    res: RequestResult::Get { value: None },
+                }).unwrap(),
+            _ => panic!("unexpected message!"),
+        });
+
+        let nodes = create_node_addresses(vec![fake_node_port]);
+
+        let mut client = Client::new(nodes.clone());
+        let res = client.get::<_, Vec<_>>(vec![1]);
+        assert_eq!(
+            None,
+            current_thread::block_on_all(res).unwrap(),
+        );
+    }
+
+    #[test]
+    fn client_sets_value() {
+        let fake_node_port = 20364;
+        FakeNode::create_and_run(fake_node_port, |msg| match msg {
+            NodeMessage::Propose { id, response, .. } => response
+                .unbounded_send(Protocol::RequestResult {
+                    id: id.get_client_request_id(),
+                    res: RequestResult::Set { successful: true },
+                }).unwrap(),
+            _ => panic!("unexpected message!"),
+        });
+
+        let nodes = create_node_addresses(vec![fake_node_port]);
+
+        let mut client = Client::new(nodes.clone());
+        let res = client.set(vec![1], vec![2]);
+        assert!(current_thread::block_on_all(res).is_ok());
+    }
+
+    #[test]
+    fn client_sets_value_fails() {
+        let fake_node_port = 20365;
+        FakeNode::create_and_run(fake_node_port, |msg| match msg {
+            NodeMessage::Propose { id, response, .. } => response
+                .unbounded_send(Protocol::RequestResult {
+                    id: id.get_client_request_id(),
+                    res: RequestResult::Set { successful: false },
+                }).unwrap(),
+            _ => panic!("unexpected message!"),
+        });
+
+        let nodes = create_node_addresses(vec![fake_node_port]);
+
+        let mut client = Client::new(nodes.clone());
+        let res = client.set(vec![1], vec![2]);
+        assert_eq!(
+            Error::RequestNotSuccessful,
+            current_thread::block_on_all(res).err().unwrap()
+        );
+    }
+
+    #[test]
+    fn client_deletes_value() {
+        let fake_node_port = 20366;
+        FakeNode::create_and_run(fake_node_port, |msg| match msg {
+            NodeMessage::Propose { id, response, .. } => response
+                .unbounded_send(Protocol::RequestResult {
+                    id: id.get_client_request_id(),
+                    res: RequestResult::Delete { successful: true },
+                }).unwrap(),
+            _ => panic!("unexpected message!"),
+        });
+
+        let nodes = create_node_addresses(vec![fake_node_port]);
+
+        let mut client = Client::new(nodes.clone());
+        let res = client.delete(vec![1]);
+        assert!(current_thread::block_on_all(res).is_ok());
+    }
+
+    #[test]
+    fn client_deletes_value_fails() {
+        let fake_node_port = 20367;
+        FakeNode::create_and_run(fake_node_port, |msg| match msg {
+            NodeMessage::Propose { id, response, .. } => response
+                .unbounded_send(Protocol::RequestResult {
+                    id: id.get_client_request_id(),
+                    res: RequestResult::Delete { successful: false },
+                }).unwrap(),
+            _ => panic!("unexpected message!"),
+        });
+
+        let nodes = create_node_addresses(vec![fake_node_port]);
+
+        let mut client = Client::new(nodes.clone());
+        let res = client.delete(vec![1]);
+        assert_eq!(
+            Error::RequestNotSuccessful,
+            current_thread::block_on_all(res).err().unwrap()
+        );
+    }
+
+    #[test]
+    fn client_scan() {
+        let fake_node_port = 20368;
+        FakeNode::create_and_run(fake_node_port, |msg| match msg {
+            NodeMessage::Propose { id, response, .. } => response
+                .unbounded_send(Protocol::RequestResult {
+                    id: id.get_client_request_id(),
+                    res: RequestResult::Scan {
+                        keys: Some(vec![vec![1]]),
+                    },
+                }).unwrap(),
+            _ => panic!("unexpected message!"),
+        });
+
+        let nodes = create_node_addresses(vec![fake_node_port]);
+
+        let mut client = Client::new(nodes.clone());
+        let res = client.scan();
+        let res: Vec<Vec<u8>> = current_thread::block_on_all(res).unwrap();
+        assert_eq!(&[1], &res[0][..]);
+    }
+
+    #[test]
+    fn client_scan_fails() {
+        let fake_node_port = 20369;
+        FakeNode::create_and_run(fake_node_port, |msg| match msg {
+            NodeMessage::Propose { id, response, .. } => response
+                .unbounded_send(Protocol::RequestResult {
+                    id: id.get_client_request_id(),
+                    res: RequestResult::Scan { keys: None },
+                }).unwrap(),
+            _ => panic!("unexpected message!"),
+        });
+
+        let nodes = create_node_addresses(vec![fake_node_port]);
+
+        let mut client = Client::new(nodes.clone());
+        let res = client.scan::<Vec<_>>();
+        assert_eq!(
+            Error::RequestNotSuccessful,
+            current_thread::block_on_all(res).err().unwrap()
+        );
     }
 }

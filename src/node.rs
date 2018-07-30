@@ -39,6 +39,11 @@ impl RequestIdentifier {
     pub fn new(id: u64, con_id: ConnectionIdentifier) -> RequestIdentifier {
         RequestIdentifier { id, con_id }
     }
+
+    /// Returns the ID of the request on the client side.
+    pub fn get_client_request_id(&self) -> u64 {
+        self.id
+    }
 }
 
 /// A message for the node.
@@ -213,7 +218,7 @@ impl Node {
 
         if let Some(sender) = response_sender {
             let _ = sender.unbounded_send(Protocol::RequestResult {
-                id: id.id,
+                id: id.get_client_request_id(),
                 res: response,
             });
         }
