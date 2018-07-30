@@ -146,8 +146,25 @@ impl Future for PeerConnections {
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let _ = self.poll_building_connections();
-        // TODO: When `self.building_connections` are empty, the future will no be called anymore,
-        // but as we are polling it directly, that should not be any problem.
+
+        // TODO: Could be implemented more memory friendly!
+        let mut rebuild_connections = None;
+        self.connections.retain(|peer, con| {
+            if con.poll().is_err() {
+                rebuild_connections.get_or_insert_with(Vec::new).push(*peer);
+                false
+            } else {
+                true
+            }
+        });
+
+        if let Some(rebuild) = rebuild_connections {
+            rebuild.into_iter().for_each(|peer| {
+                self.building_connections
+                    .push(BuildingConnection::from(self.peers.get(&peer).unwrap()))
+            });
+        }
+
         Ok(NotReady)
     }
 }

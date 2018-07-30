@@ -10,6 +10,7 @@ use bytes::{Buf, BytesMut, IntoBuf};
 use std::{
     io::{Read, Write},
     mem,
+    net::Shutdown,
 };
 
 use bincode;
@@ -22,7 +23,7 @@ pub struct Connection {
     stream: TcpStream,
     buf: Vec<u8>,
     next_packet_buf: BytesMut,
-    next_packet_len: Option<u16>,
+    next_packet_len: Option<u32>,
 }
 
 impl From<TcpStream> for Connection {
@@ -56,9 +57,9 @@ impl Connection {
 
                 self.next_packet_buf.extend_from_slice(&self.buf[..len]);
             } else {
-                if self.next_packet_buf.len() >= mem::size_of::<u16>() {
-                    let len = self.next_packet_buf.split_to(mem::size_of::<u16>());
-                    self.next_packet_len = Some(len.into_buf().get_u16_be());
+                if self.next_packet_buf.len() >= mem::size_of::<u32>() {
+                    let len = self.next_packet_buf.split_to(mem::size_of::<u32>());
+                    self.next_packet_len = Some(len.into_buf().get_u32_be());
                 } else {
                     let len = try_nb!(self.stream.read(&mut self.buf));
 
@@ -75,7 +76,10 @@ impl Connection {
 
     /// Returns if the underlying TCPStream is writeable.
     pub fn poll_writeable(&mut self) -> bool {
-        self.stream.poll_write_ready().map(|r| r.is_ready()).unwrap_or(false)
+        self.stream
+            .poll_write_ready()
+            .map(|r| r.is_ready())
+            .unwrap_or(false)
     }
 }
 
@@ -89,8 +93,7 @@ impl Stream for Connection {
             None => return Ok(Ready(None)),
         };
 
-        let msg = bincode::deserialize(&packet)?;
-        Ok(Ready(Some(msg)))
+        Ok(Ready(Some(bincode::deserialize(&packet)?)))
     }
 }
 
@@ -102,8 +105,8 @@ impl Sink for Connection {
         // TODO: handle to much data!
         let buf = bincode::serialize(&item)?;
 
-        let mut len: [u8; 2] = [0; 2];
-        BigEndian::write_u16(&mut len, buf.len() as u16);
+        let mut len: [u8; 4] = [0; 4];
+        BigEndian::write_u32(&mut len, buf.len() as u32);
         self.stream.write(&len)?;
         self.stream.write(&buf)?;
 
@@ -113,6 +116,12 @@ impl Sink for Connection {
     fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
         self.stream.flush()?;
         Ok(Ready(()))
+    }
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        let _ = self.stream.shutdown(Shutdown::Both);
     }
 }
 
@@ -162,8 +171,7 @@ mod tests {
                                 .map(|_| ()),
                         );
                         Ok(())
-                    })
-                    .map_err(|e| panic!(e)),
+                    }).map_err(|e| panic!(e)),
             );
         });
 
@@ -180,8 +188,7 @@ mod tests {
                     c.into_future()
                         .map(move |(msgr, c)| (msgr, c, msg))
                         .map_err(|e| e.0)
-                })
-                .map_err(|e| panic!(e)),
+                }).map_err(|e| panic!(e)),
         ).unwrap();
 
         assert_eq!(msgr.unwrap(), msg);

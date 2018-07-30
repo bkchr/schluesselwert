@@ -8,7 +8,8 @@ use schluesselwert::{Node, Peer};
 
 use std::{
     collections::HashMap,
-    ops::Deref,
+    mem,
+    ops::{Deref, DerefMut},
     sync::mpsc::{channel, Receiver},
     thread,
     time::Duration,
@@ -24,7 +25,7 @@ use futures::{
     Future, Poll, Stream,
 };
 
-use tokio::executor::current_thread;
+use tokio::{runtime::Runtime, executor::current_thread };
 
 use tempdir::TempDir;
 
@@ -95,61 +96,92 @@ impl NodeHandle {
 }
 
 fn start_node(
-    node: usize,
+    node: Peer,
     listen_port: u16,
     peers: Vec<Peer>,
 ) -> Receiver<(NodeHandle, UnboundedSender<TestMessages>)> {
     let (sender, receiver) = channel();
     thread::spawn(move || {
         let dir = TempDir::new("with_one_node").unwrap();
-        let node = Node::new(peers[node].get_id(), peers, listen_port, &dir).unwrap();
+        let mut runtime = Runtime::new().expect("Creates runtime");
+
+        let node = Node::new(node.get_id(), peers, listen_port, &dir).unwrap();
 
         let (executor, node_sender, node_handle) = NodeExecutor::new(node);
         let _ = sender.send((node_handle, node_sender));
-        tokio::run(executor);
+
+        let _ = runtime.block_on(executor);
+        runtime.shutdown_now();
     });
 
     receiver
 }
 
-struct NodesMap(HashMap<u64, (NodeHandle, UnboundedSender<TestMessages>)>);
+type NodesMapInner = HashMap<u64, (NodeHandle, UnboundedSender<TestMessages>)>;
+struct NodesMap(NodesMapInner);
 
-impl From<HashMap<u64, (NodeHandle, UnboundedSender<TestMessages>)>> for NodesMap {
-    fn from(map: HashMap<u64, (NodeHandle, UnboundedSender<TestMessages>)>) -> NodesMap {
+impl NodesMap {
+    fn merge(&mut self, mut other: Self) {
+        let inner = mem::replace(&mut other.0, HashMap::default());
+        self.0.extend(inner);
+    }
+}
+
+impl From<NodesMapInner> for NodesMap {
+    fn from(map: NodesMapInner) -> NodesMap {
         NodesMap(map)
     }
 }
 
 impl Deref for NodesMap {
-    type Target = HashMap<u64, (NodeHandle, UnboundedSender<TestMessages>)>;
+    type Target = NodesMapInner;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl Drop for NodesMap {
-    fn drop(&mut self) {
-        self.0.clear();
-        // To prevent crashes at closing the node threads, we give them some time to finish
-        thread::sleep(Duration::from_millis(500));
+impl DerefMut for NodesMap {
+    fn deref_mut(&mut self) -> &mut NodesMapInner {
+        &mut self.0
     }
 }
 
-/// Setup the nodes
-fn setup_nodes(nodes: Vec<Peer>, listen_ports: Vec<u16>) -> NodesMap {
+impl Drop for NodesMap {
+    fn drop(&mut self) {
+        if !self.0.is_empty() {
+            self.0.clear();
+            // To prevent crashes at closing the node threads, we give them some time to finish
+            thread::sleep(Duration::from_millis(500));
+        }
+    }
+}
+
+/// Setup the given nodes and tell them about the given cluster nodes
+fn setup_nodes_with_cluster_nodes(
+    nodes: Vec<Peer>,
+    listen_ports: Vec<u16>,
+    cluster_nodes: Vec<Peer>,
+) -> NodesMap {
     let node_receivers = (0..nodes.len())
         .map(|i| {
             (
                 nodes[i].get_id(),
-                start_node(i, listen_ports[i], nodes.clone()),
+                start_node(nodes[i].clone(), listen_ports[i], cluster_nodes.clone()),
             )
         }).collect::<Vec<_>>();
+
     node_receivers
         .into_iter()
         .map(|(id, r)| (id, r.recv_timeout(Duration::from_millis(500)).unwrap()))
         .collect::<HashMap<_, _>>()
         .into()
+}
+
+/// Setup the nodes
+fn setup_nodes(nodes: Vec<Peer>, listen_ports: Vec<u16>) -> NodesMap {
+    let cluster_nodes = nodes.clone();
+    setup_nodes_with_cluster_nodes(nodes, listen_ports, cluster_nodes)
 }
 
 /// Collect the leader id from each nodes, checks that all selected the same leader and returns
@@ -188,13 +220,19 @@ fn collect_leader_ids(nodes_map: &NodesMap) -> u64 {
     }
 }
 
+fn create_node(id: u64, first_listen_port: u16) -> (Peer, u16) {
+    let listen_port = first_listen_port + id as u16;
+    let node = Peer::new(id as u64, ([127, 0, 0, 1], listen_port).into());
+
+    (node, listen_port)
+}
+
 fn create_nodes(count: usize, first_listen_port: u16) -> (Vec<Peer>, Vec<u16>) {
     let mut nodes = Vec::new();
     let mut listen_ports = Vec::new();
 
     for i in 1..=count {
-        let listen_port = first_listen_port + i as u16;
-        let node = Peer::new(i as u64, ([127, 0, 0, 1], listen_port).into());
+        let (node, listen_port) = create_node(i as u64, first_listen_port);
 
         nodes.push(node);
         listen_ports.push(listen_port);
@@ -241,4 +279,50 @@ fn with_five_node() {
     // give some time for the election
     thread::sleep(Duration::from_secs(2));
     collect_leader_ids(&nodes_map);
+}
+
+fn wait_for_leader_kill_leader_and_wait_for_next_leader_impl(
+    base_listen_port: u16,
+) -> (NodesMap, u64, u64) {
+    let (nodes, listen_ports) = create_nodes(5, base_listen_port);
+    let mut nodes_map = setup_nodes(nodes, listen_ports);
+
+    // give some time for the election
+    thread::sleep(Duration::from_secs(2));
+    let leader_id = collect_leader_ids(&nodes_map);
+
+    nodes_map
+        .remove(&leader_id)
+        .expect("Leader needs to exist in the nodes map!");
+
+    // give some time for the election
+    thread::sleep(Duration::from_secs(2));
+    let new_leader_id = collect_leader_ids(&nodes_map);
+
+    assert_ne!(leader_id, new_leader_id);
+    (nodes_map, leader_id, new_leader_id)
+}
+
+#[test]
+fn wait_for_leader_kill_leader_and_wait_for_next_leader() {
+    wait_for_leader_kill_leader_and_wait_for_next_leader_impl(20040);
+}
+
+#[test]
+fn killed_node_rejoins() {
+    let (mut nodes_map, removed_node, last_leader) =
+        wait_for_leader_kill_leader_and_wait_for_next_leader_impl(20050);
+
+    let (nodes, _) = create_nodes(5, 20050);
+    let (removed_node, listen_port) = create_node(removed_node, 20050);
+    // just recreate the killed node
+    let new_nodes_map =
+        setup_nodes_with_cluster_nodes(vec![removed_node], vec![listen_port], nodes.clone());
+    nodes_map.merge(new_nodes_map);
+
+    // give some time for joining the new node
+    thread::sleep(Duration::from_secs(2));
+    let new_leader_id = collect_leader_ids(&nodes_map);
+
+    assert_eq!(last_leader, new_leader_id);
 }
