@@ -217,20 +217,25 @@ impl ClusterConnection {
         self.connection = None;
     }
 
-    fn poll_connect(&mut self) {
-        match self
-            .connect
-            .as_mut()
-            .expect("poll_connect() should only be called while connecting")
-            .poll()
-        {
-            Ok(Ready(con)) => {
-                self.connection = Some(Connection::from(con));
-                self.connect = None;
-                self.resend_active_requests();
+    fn poll_connect(&mut self) -> Poll<(), Error> {
+        loop {
+            match self
+                .connect
+                .as_mut()
+                .expect("poll_connect() should only be called while connecting")
+                .poll()
+            {
+                Ok(Ready(con)) => {
+                    self.connection = Some(Connection::from(con));
+                    self.connect = None;
+                    self.resend_active_requests();
+                    return Ok(Ready(()));
+                }
+                Ok(NotReady) => {
+                    return Ok(NotReady);
+                }
+                Err(_) => self.connect_to_cluster(None),
             }
-            Ok(NotReady) => {}
-            Err(_) => self.connect_to_cluster(None),
         }
     }
 
@@ -291,7 +296,7 @@ impl ClusterConnection {
                 if let Some((_, sender)) = self.active_requests.remove(&id) {
                     match sender {
                         ClusterRequestReponseSender::Request(sender) => {
-                            let _ = sender.send(res);
+                            sender.send(res).unwrap();
                         }
                         _ => {}
                     };
@@ -316,10 +321,10 @@ impl ClusterConnection {
     }
 
     /// Poll the send requests and forward them to the cluster!
-    fn poll_send_reqs(&mut self) -> bool {
+    fn poll_send_reqs(&mut self) -> Poll<Option<()>, Error> {
         loop {
             if !self.connection.as_mut().unwrap().poll_writeable() {
-                return true;
+                return Ok(NotReady);
             }
 
             match self.recv_send_req.poll() {
@@ -348,10 +353,11 @@ impl ClusterConnection {
                         eprintln!("poll_send_reqs error: {:?}", e);
                         // reconnect to the cluster
                         self.connect_to_cluster(None);
+                        return Ok(Ready(Some(())));
                     }
                 }
-                Err(_) | Ok(Ready(None)) => return false,
-                Ok(NotReady) => return true,
+                Err(_) | Ok(Ready(None)) => return Ok(Ready(None)),
+                Ok(NotReady) => return Ok(NotReady),
             }
         }
     }
@@ -364,12 +370,15 @@ impl Future for ClusterConnection {
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         loop {
             if self.connect.is_some() {
-                self.poll_connect();
+                try_ready!(self.poll_connect());
             } else if self.connection.is_some() {
                 self.poll_connection();
 
                 if self.connection.is_some() {
-                    self.poll_send_reqs();
+                    match try_ready!(self.poll_send_reqs()) {
+                        Some(()) => {}
+                        None => return Ok(Ready(())),
+                    }
                 }
             } else {
                 self.connect_to_cluster(None);

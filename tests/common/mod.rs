@@ -142,16 +142,17 @@ fn start_node(
     node: Peer,
     listen_port: u16,
     peers: Vec<Peer>,
-) -> Receiver<(NodeHandle, UnboundedSender<TestMessages>)> {
+    path: Option<TempDir>,
+) -> Receiver<(NodeHandle, UnboundedSender<TestMessages>, TempDir)> {
     let (sender, receiver) = channel();
     thread::spawn(move || {
-        let dir = TempDir::new("with_one_node").unwrap();
+        let dir = path.unwrap_or_else(|| TempDir::new("node").unwrap());
         let mut runtime = Runtime::new().expect("Creates runtime");
 
         let node = Node::new(node.get_id(), peers, listen_port, &dir).unwrap();
 
         let (executor, node_sender, node_handle) = NodeExecutor::new(node);
-        let _ = sender.send((node_handle, node_sender));
+        let _ = sender.send((node_handle, node_sender, dir));
 
         let _ = runtime.block_on(executor);
         runtime.shutdown_now();
@@ -160,13 +161,44 @@ fn start_node(
     receiver
 }
 
-type NodesMapInner = HashMap<u64, (NodeHandle, UnboundedSender<TestMessages>)>;
+type NodesMapInner = HashMap<
+    u64,
+    (
+        Peer,
+        NodeHandle,
+        UnboundedSender<TestMessages>,
+        Option<TempDir>,
+    ),
+>;
 pub struct NodesMap(NodesMapInner);
 
 impl NodesMap {
     pub fn merge(&mut self, mut other: Self) {
         let inner = mem::replace(&mut other.0, HashMap::default());
         self.0.extend(inner);
+    }
+
+    pub fn take_dir(&mut self, id: u64) -> Option<TempDir> {
+        self.0.get_mut(&id).unwrap().3.take()
+    }
+
+    pub fn take_dir_and_remove(&mut self, id: u64) -> Option<TempDir> {
+        self.0.remove(&id).unwrap().3
+    }
+
+    pub fn restart_node(&mut self, id: u64, db_path: Option<TempDir>, base_listen_port: u16) {
+        assert!(!self.0.contains_key(&id));
+        let (node, listen_port) = create_node(id, base_listen_port);
+
+        let mut nodes = self.0.values().map(|v| v.0.clone()).collect::<Vec<_>>();
+        nodes.push(node.clone());
+
+        self.merge(setup_nodes_with_cluster_nodes(
+            vec![node],
+            vec![listen_port],
+            Some(vec![db_path]),
+            nodes,
+        ));
     }
 }
 
@@ -204,19 +236,27 @@ impl Drop for NodesMap {
 pub fn setup_nodes_with_cluster_nodes(
     nodes: Vec<Peer>,
     listen_ports: Vec<u16>,
+    db_paths: Option<Vec<Option<TempDir>>>,
     cluster_nodes: Vec<Peer>,
 ) -> NodesMap {
-    let node_receivers = (0..nodes.len())
-        .map(|i| {
+    let db_paths = db_paths.unwrap_or_else(|| listen_ports.iter().map(|_| None).collect());
+
+    let node_receivers = nodes
+        .into_iter()
+        .zip(listen_ports.into_iter())
+        .zip(db_paths.into_iter())
+        .map(|((n, lp), db)| {
             (
-                nodes[i].get_id(),
-                start_node(nodes[i].clone(), listen_ports[i], cluster_nodes.clone()),
+                n.get_id(),
+                n.clone(),
+                start_node(n, lp, cluster_nodes.clone(), db),
             )
         }).collect::<Vec<_>>();
 
     node_receivers
         .into_iter()
-        .map(|(id, r)| (id, r.recv_timeout(Duration::from_millis(500)).unwrap()))
+        .map(|(id, n, r)| (id, n, r.recv_timeout(Duration::from_millis(500)).unwrap()))
+        .map(|(id, n, v)| (id, (n, v.0, v.1, Some(v.2))))
         .collect::<HashMap<_, _>>()
         .into()
 }
@@ -224,7 +264,7 @@ pub fn setup_nodes_with_cluster_nodes(
 /// Setup the nodes
 pub fn setup_nodes(nodes: Vec<Peer>, listen_ports: Vec<u16>) -> NodesMap {
     let cluster_nodes = nodes.clone();
-    setup_nodes_with_cluster_nodes(nodes, listen_ports, cluster_nodes)
+    setup_nodes_with_cluster_nodes(nodes, listen_ports, None, cluster_nodes)
 }
 
 /// Collect the leader id from each nodes, checks that all selected the same leader and returns
@@ -232,7 +272,7 @@ pub fn setup_nodes(nodes: Vec<Peer>, listen_ports: Vec<u16>) -> NodesMap {
 pub fn collect_leader_ids(nodes_map: &NodesMap, old_leader_id: Option<u64>) -> u64 {
     let receiver = {
         let (sender, receiver) = unbounded();
-        nodes_map.iter().for_each(|(_, (_, s))| {
+        nodes_map.iter().for_each(|(_, (_, _, s, _))| {
             s.unbounded_send(TestMessages::WaitForLeaderId {
                 result: sender.clone(),
                 old_leader: old_leader_id,
@@ -302,7 +342,7 @@ pub fn generate_random_data(count: usize) -> HashMap<Vec<u8>, Vec<u8>> {
 pub fn compare_node_snapshots(nodes_map: &NodesMap) {
     let receiver = {
         let (sender, receiver) = unbounded();
-        nodes_map.iter().for_each(|(_, (_, s))| {
+        nodes_map.iter().for_each(|(_, (_, _, s, _))| {
             s.unbounded_send(TestMessages::GetSnapshot {
                 result: sender.clone(),
             }).unwrap();
@@ -332,7 +372,7 @@ pub fn wait_for_snapshot_applied(nodes_map: &NodesMap, node_id: u64) {
     nodes_map
         .get(&node_id)
         .unwrap()
-        .1
+        .2
         .unbounded_send(TestMessages::WaitForSnapshotApply { result: sender })
         .unwrap();
 

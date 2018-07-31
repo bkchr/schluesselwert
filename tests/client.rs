@@ -135,7 +135,7 @@ fn set_500_add_node_and_set_500_more() {
     let (nodes, _) = create_nodes(5, 20060);
     let (new_node, listen_port) = create_node(5, 20060);
     let new_nodes_map =
-        setup_nodes_with_cluster_nodes(vec![new_node.clone()], vec![listen_port], nodes);
+        setup_nodes_with_cluster_nodes(vec![new_node.clone()], vec![listen_port], None, nodes);
     nodes_map.merge(new_nodes_map);
 
     // Add the new node
@@ -159,6 +159,53 @@ fn set_500_add_node_and_set_500_more() {
     collect_leader_ids(&nodes_map, None);
 
     wait_for_snapshot_applied(&nodes_map, 5);
+    // Make sure that all nodes have the same data
+    compare_node_snapshots(&nodes_map);
+}
+
+#[test]
+fn remove_leader_and_re_add_node() {
+    let (nodes, listen_ports) = create_nodes(5, 20070);
+    let mut nodes_map = setup_nodes(nodes, listen_ports.clone());
+
+    let nodes = listen_ports_to_socket_addrs(listen_ports);
+    let mut client = Client::new(nodes);
+
+    let test_data = generate_random_data(1000);
+    current_thread::block_on_all(future::join_all(
+        test_data
+            .iter()
+            .take(500)
+            .map(|(k, v)| client.set(k.clone(), v.clone())),
+    )).unwrap();
+
+    let leader_id = collect_leader_ids(&nodes_map, None);
+    current_thread::block_on_all(client.remove_node_from_cluster(leader_id)).unwrap();
+    let removed_node_path = nodes_map.take_dir_and_remove(leader_id);
+
+    collect_leader_ids(&nodes_map, Some(leader_id));
+
+    // add the rest of the data
+    current_thread::block_on_all(future::join_all(
+        test_data
+            .iter()
+            .skip(500)
+            .map(|(k, v)| client.set(k.clone(), v.clone())),
+    )).unwrap();
+
+    // restart the node
+    nodes_map.restart_node(leader_id, removed_node_path, 20070);
+
+    current_thread::block_on_all(
+        client.add_node_to_cluster(leader_id, ([127, 0, 0, 1], 20070 + leader_id as u16).into()),
+    ).unwrap();
+
+    // Check that all data was set
+    check_data_with_get(test_data, &mut client);
+
+    // just make sure that all nodes have the same leader
+    collect_leader_ids(&nodes_map, None);
+
     // Make sure that all nodes have the same data
     compare_node_snapshots(&nodes_map);
 }

@@ -75,7 +75,7 @@ fn killed_node_rejoins() {
     let (removed_node, listen_port) = create_node(removed_node, 20050);
     // just recreate the killed node
     let new_nodes_map =
-        setup_nodes_with_cluster_nodes(vec![removed_node], vec![listen_port], nodes.clone());
+        setup_nodes_with_cluster_nodes(vec![removed_node], vec![listen_port], None, nodes.clone());
     nodes_map.merge(new_nodes_map);
 
     let new_leader_id = collect_leader_ids(&nodes_map, None);
