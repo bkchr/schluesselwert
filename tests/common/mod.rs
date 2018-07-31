@@ -3,6 +3,7 @@
 use schluesselwert::{Node, Peer};
 
 use std::{
+    cell::RefCell,
     collections::HashMap,
     mem,
     ops::{Deref, DerefMut},
@@ -17,7 +18,7 @@ use futures::{
         mpsc::{unbounded, UnboundedReceiver, UnboundedSender},
         oneshot,
     },
-    Async::Ready,
+    Async::{NotReady, Ready},
     Future, Poll, Stream,
 };
 
@@ -25,15 +26,16 @@ use tokio::{executor::current_thread, runtime::Runtime};
 
 use tempdir::TempDir;
 
-use rand::{Rng, SeedableRng, distributions::Standard, prng::XorShiftRng};
+use rand::{distributions::Standard, prng::XorShiftRng, Rng, SeedableRng};
 
 const TEST_SEED: [u8; 16] = [
     39, 122, 200, 21, 199, 23, 104, 89, 86, 255, 116, 75, 18, 231, 38, 191,
 ];
 
 pub enum TestMessages {
-    RequestLeaderId {
+    WaitForLeaderId {
         result: UnboundedSender<TestMessages>,
+        old_leader: Option<u64>,
     },
     LeaderId {
         id: u64,
@@ -45,6 +47,7 @@ pub struct NodeExecutor {
     node: Node,
     msg_recv: UnboundedReceiver<TestMessages>,
     node_handle_recv: oneshot::Receiver<()>,
+    pending_requests: Vec<RefCell<TestMessages>>,
 }
 
 impl NodeExecutor {
@@ -56,10 +59,30 @@ impl NodeExecutor {
                 node,
                 msg_recv,
                 node_handle_recv,
+                pending_requests: Vec::new(),
             },
             sender,
             node_handle,
         )
+    }
+
+    fn process_pending_requests(&mut self) {
+        let leader = self.node.get_leader_id();
+
+        self.pending_requests.retain(|r| {
+            let mut r = r.borrow_mut();
+            match *r {
+                TestMessages::WaitForLeaderId { ref mut result, old_leader } => {
+                    if leader != 0 && Some(leader) != old_leader {
+                        let _ = result.unbounded_send(TestMessages::LeaderId { id: leader });
+                        false
+                    } else {
+                        true
+                    }
+                }
+                _ => false,
+            }
+        })
     }
 }
 
@@ -74,15 +97,16 @@ impl Future for NodeExecutor {
 
         self.node.poll().unwrap();
         loop {
-            match try_ready!(self.msg_recv.poll()) {
-                Some(TestMessages::RequestLeaderId { result }) => {
-                    let _ = result.unbounded_send(TestMessages::LeaderId {
-                        id: self.node.get_leader_id(),
-                    });
+            match self.msg_recv.poll().unwrap() {
+                Ready(Some(req)) => {
+                    self.pending_requests.push(RefCell::new(req));
                 }
-                _ => {}
+                _ => break,
             };
         }
+
+        self.process_pending_requests();
+        Ok(NotReady)
     }
 }
 
@@ -189,13 +213,15 @@ pub fn setup_nodes(nodes: Vec<Peer>, listen_ports: Vec<u16>) -> NodesMap {
 
 /// Collect the leader id from each nodes, checks that all selected the same leader and returns
 /// the leader id.
-pub fn collect_leader_ids(nodes_map: &NodesMap) -> u64 {
+pub fn collect_leader_ids(nodes_map: &NodesMap, old_leader_id: Option<u64>) -> u64 {
     let result_receivers = nodes_map
         .iter()
         .map(|(_, (_, s))| {
             let (sender, receiver) = unbounded();
-            s.unbounded_send(TestMessages::RequestLeaderId { result: sender })
-                .unwrap();
+            s.unbounded_send(TestMessages::WaitForLeaderId {
+                result: sender,
+                old_leader: old_leader_id,
+            }).unwrap();
             receiver.into_future().map_err(|e| e.0).map(|v| match v.0 {
                 Some(TestMessages::LeaderId { id }) => Some(id),
                 _ => None,
