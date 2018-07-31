@@ -1,5 +1,6 @@
 #[macro_use]
 extern crate futures;
+extern crate rand;
 extern crate schluesselwert;
 extern crate tempdir;
 extern crate tokio;

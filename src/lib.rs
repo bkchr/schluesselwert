@@ -28,5 +28,5 @@ mod peer_connections;
 mod protocol;
 mod storage;
 
-pub use node::{Node, Peer};
 pub use client::Client;
+pub use node::{Node, Peer};

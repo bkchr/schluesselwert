@@ -433,10 +433,7 @@ mod tests {
 
         let mut client = Client::new(nodes.clone());
         let res = client.get::<_, Vec<_>>(vec![1]);
-        assert_eq!(
-            None,
-            current_thread::block_on_all(res).unwrap(),
-        );
+        assert_eq!(None, current_thread::block_on_all(res).unwrap(),);
     }
 
     #[test]

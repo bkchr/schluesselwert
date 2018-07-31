@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use schluesselwert::{Node, Peer};
 
 use std::{
@@ -22,6 +24,12 @@ use futures::{
 use tokio::{executor::current_thread, runtime::Runtime};
 
 use tempdir::TempDir;
+
+use rand::{Rng, SeedableRng, distributions::Standard, prng::XorShiftRng};
+
+const TEST_SEED: [u8; 16] = [
+    39, 122, 200, 21, 199, 23, 104, 89, 86, 255, 116, 75, 18, 231, 38, 191,
+];
 
 pub enum TestMessages {
     RequestLeaderId {
@@ -234,4 +242,21 @@ pub fn create_nodes(count: usize, first_listen_port: u16) -> (Vec<Peer>, Vec<u16
     }
 
     (nodes, listen_ports)
+}
+
+pub fn generate_random_data(count: usize) -> HashMap<Vec<u8>, Vec<u8>> {
+    let mut rng = XorShiftRng::from_seed(TEST_SEED);
+    let mut data = HashMap::new();
+
+    while data.len() < count {
+        let key_len = rng.gen_range(5, 15);
+        let key = rng.sample_iter(&Standard).take(key_len).collect();
+
+        let value_len = rng.gen_range(25, 50);
+        let value = rng.sample_iter(&Standard).take(value_len).collect();
+
+        data.insert(key, value);
+    }
+
+    data
 }
