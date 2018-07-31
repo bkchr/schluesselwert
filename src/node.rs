@@ -7,7 +7,7 @@ use storage::Storage;
 
 use raft::{
     self,
-    eraftpb::{Entry, EntryType, Message},
+    eraftpb::{ConfChange, ConfChangeType, Entry, EntryType, Message},
     raw_node::RawNode,
     Config, Ready,
 };
@@ -27,6 +27,8 @@ use futures::{
 };
 
 use bincode;
+
+use protobuf;
 
 /// An identifier to uniquely identify a request of a connection.
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize, Eq, Hash)]
@@ -190,9 +192,32 @@ impl Node {
                 self.handle_commited_request(request, id, entry.index);
             }
             EntryType::EntryConfChange => {
-                //TODO!
+                let conf_change: ConfChange = protobuf::parse_from_bytes(entry.get_data())
+                    .expect("Entry data needs to be a valid `ConfChange`!");
+                let id: RequestIdentifier = bincode::deserialize(&entry.get_context())
+                    .expect("Entry context needs to be a valid `RequestIdentifier`!");
+                self.handle_commited_conf_change(conf_change, id, entry.index);
             }
         }
+    }
+
+    /// Handle a commited `ConfChange`.
+    fn handle_commited_conf_change(
+        &mut self,
+        conf_change: ConfChange,
+        id: RequestIdentifier,
+        entry_index: u64,
+    ) {
+        match conf_change.get_change_type() {
+            ConfChangeType::AddNode => {}
+            ConfChangeType::RemoveNode => {}
+            ConfChangeType::AddLearnerNode => unimplemented!(),
+        };
+
+        let config_state = self.node.apply_conf_change(&conf_change);
+        self.node
+            .mut_store()
+            .set_conf_state(config_state, entry_index);
     }
 
     /// Handle a request that was committed.

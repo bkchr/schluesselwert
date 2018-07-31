@@ -116,7 +116,7 @@ impl Storage {
 
     /// Set the `ConfState`.
     /// idx - The index of the `Entry` that requested this operation.
-    fn set_conf_state(&mut self, conf_state: ConfState, idx: u64) -> Result<()> {
+    pub fn set_conf_state(&mut self, conf_state: ConfState, idx: u64) -> Result<()> {
         self.db
             .put(CONF_STATE_KEY, &proto_message_as_bytes(&conf_state)?)?;
         self.conf_state = conf_state;

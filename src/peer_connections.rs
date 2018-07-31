@@ -113,8 +113,7 @@ impl PeerConnections {
 
         if res.is_err() {
             // rebuild the connection
-            self.building_connections
-                .push(BuildingConnection::from(self.peers.get(&peer).unwrap()));
+            self.create_building_connection(peer);
             self.connections.remove(&peer);
         }
 
@@ -128,7 +127,10 @@ impl PeerConnections {
                 None => return Ok(NotReady),
             };
 
-            self.connections.insert(peer, connection);
+            // If the peer was removed, just drop the connection
+            if self.peers.contains_key(&peer) {
+                self.connections.insert(peer, connection);
+            }
         }
     }
 
@@ -137,6 +139,29 @@ impl PeerConnections {
         self.peers
             .get(&peer)
             .map(|p| bincode::deserialize(&p.context.as_ref().unwrap()).unwrap())
+    }
+
+    /// Remove a peer from the active list.
+    pub fn remove_peer(&mut self, peer: u64) {
+        self.connections.remove(&peer);
+        self.peers.remove(&peer);
+        // TODO: BuildingConnection spins forever!
+    }
+
+    /// Adds a peer to the active list.
+    pub fn add_peer(&mut self, peer: Peer) {
+        let id = peer.id;
+        if !self.peers.contains_key(&id) {
+            self.peers.insert(id, peer);
+            self.create_building_connection(id);
+        }
+    }
+
+    fn create_building_connection(&mut self, peer: u64) {
+        if let Some(peer) = self.peers.get(&peer) {
+            self.building_connections
+                .push(BuildingConnection::from(peer));
+        }
     }
 }
 
@@ -160,8 +185,7 @@ impl Future for PeerConnections {
 
         if let Some(rebuild) = rebuild_connections {
             rebuild.into_iter().for_each(|peer| {
-                self.building_connections
-                    .push(BuildingConnection::from(self.peers.get(&peer).unwrap()))
+                self.create_building_connection(peer);
             });
         }
 
