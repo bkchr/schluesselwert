@@ -36,8 +36,12 @@ pub enum TestMessages {
         result: UnboundedSender<u64>,
         old_leader: Option<u64>,
     },
+    GetLastAppliedIndex {
+        result: UnboundedSender<u64>,
+    },
     GetSnapshot {
         result: UnboundedSender<Snapshot>,
+        last_applied_index: u64,
     },
     WaitForSnapshotApply {
         result: UnboundedSender<()>,
@@ -85,9 +89,16 @@ impl NodeExecutor {
                         true
                     }
                 }
-                TestMessages::GetSnapshot { ref mut result } => {
-                    let _ = result.unbounded_send(node.create_snapshot().unwrap());
-                    false
+                TestMessages::GetSnapshot {
+                    ref mut result,
+                    last_applied_index,
+                } => {
+                    if node.get_last_applied_index() == last_applied_index {
+                        let _ = result.unbounded_send(node.create_snapshot().unwrap());
+                        false
+                    } else {
+                        true
+                    }
                 }
                 TestMessages::WaitForSnapshotApply { ref mut result } => {
                     if node.applied_snapshot() {
@@ -96,6 +107,10 @@ impl NodeExecutor {
                     } else {
                         true
                     }
+                }
+                TestMessages::GetLastAppliedIndex { ref mut result } => {
+                    let _ = result.unbounded_send(node.get_last_applied_index());
+                    false
                 }
             }
         })
@@ -340,11 +355,23 @@ pub fn generate_random_data(count: usize) -> HashMap<Vec<u8>, Vec<u8>> {
 
 /// Create a snapshot on each node and compare all of them.
 pub fn compare_node_snapshots(nodes_map: &NodesMap) {
+    let leader_id = collect_leader_ids(nodes_map, None);
+
+    let (sender, receiver) = unbounded();
+    nodes_map
+        .get(&leader_id)
+        .unwrap()
+        .2
+        .unbounded_send(TestMessages::GetLastAppliedIndex { result: sender })
+        .unwrap();
+    let last_applied_index = current_thread::block_on_all(receiver.collect()).unwrap()[0];
+
     let receiver = {
         let (sender, receiver) = unbounded();
         nodes_map.iter().for_each(|(_, (_, _, s, _))| {
             s.unbounded_send(TestMessages::GetSnapshot {
                 result: sender.clone(),
+                last_applied_index,
             }).unwrap();
         });
         receiver

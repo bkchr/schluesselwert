@@ -385,6 +385,11 @@ impl Node {
     pub fn applied_snapshot(&self) -> bool {
         self.applied_snapshot
     }
+
+    /// Returns the last applied index from the storage.
+    pub fn get_last_applied_index(&self) -> u64 {
+        self.node.get_store().get_last_applied_index()
+    }
 }
 
 impl Future for Node {
