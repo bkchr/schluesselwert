@@ -7,8 +7,8 @@ extern crate tokio;
 mod common;
 
 use common::{
-    collect_leader_ids, create_node, create_nodes, generate_random_data, setup_nodes,
-    setup_nodes_with_cluster_nodes,
+    collect_leader_ids, compare_node_snapshots, create_node, create_nodes, generate_random_data,
+    setup_nodes, setup_nodes_with_cluster_nodes, wait_for_snapshot_applied,
 };
 
 use schluesselwert::Client;
@@ -135,7 +135,7 @@ fn set_500_add_node_and_set_500_more() {
     let (nodes, _) = create_nodes(5, 20060);
     let (new_node, listen_port) = create_node(5, 20060);
     let new_nodes_map =
-        setup_nodes_with_cluster_nodes(vec![new_node.clone()], vec![listen_port], nodes.clone());
+        setup_nodes_with_cluster_nodes(vec![new_node.clone()], vec![listen_port], nodes);
     nodes_map.merge(new_nodes_map);
 
     // Add the new node
@@ -157,4 +157,8 @@ fn set_500_add_node_and_set_500_more() {
 
     // just make sure that all nodes have the same leader
     collect_leader_ids(&nodes_map, None);
+
+    wait_for_snapshot_applied(&nodes_map, 5);
+    // Make sure that all nodes have the same data
+    compare_node_snapshots(&nodes_map);
 }

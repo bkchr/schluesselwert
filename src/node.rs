@@ -7,9 +7,9 @@ use storage::Storage;
 
 use raft::{
     self,
-    eraftpb::{ConfChange, ConfChangeType, Entry, EntryType, Message, MessageType},
+    eraftpb::{ConfChange, ConfChangeType, Entry, EntryType, Message, MessageType, Snapshot},
     raw_node::{RawNode, SnapshotStatus},
-    Config, Ready,
+    Config, Ready, Storage as RStorage,
 };
 
 use std::{
@@ -87,6 +87,7 @@ pub struct Node {
     request_response: HashMap<RequestIdentifier, UnboundedSender<Protocol>>,
     peer_connections: PeerConnections,
     incoming_connections: IncomingConnections,
+    applied_snapshot: bool,
 }
 
 impl Node {
@@ -133,6 +134,7 @@ impl Node {
             request_response: HashMap::new(),
             peer_connections,
             incoming_connections,
+            applied_snapshot: false,
         })
     }
 
@@ -173,6 +175,7 @@ impl Node {
                 .mut_store()
                 .apply_snapshot(&ready.snapshot)
                 .unwrap();
+            self.applied_snapshot = true;
         }
 
         if !ready.entries.is_empty() {
@@ -371,6 +374,16 @@ impl Node {
     /// Returns the id of this `Node`.
     pub fn get_id(&self) -> u64 {
         self.node.raft.id
+    }
+
+    /// Create a snapshot of the current storage.
+    pub fn create_snapshot(&self) -> Result<Snapshot> {
+        self.node.get_store().snapshot().map_err(|e| e.into())
+    }
+
+    /// Has this node applied a snapshot?
+    pub fn applied_snapshot(&self) -> bool {
+        self.applied_snapshot
     }
 }
 

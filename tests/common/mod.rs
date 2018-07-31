@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use schluesselwert::{Node, Peer};
+use schluesselwert::{Node, Peer, Snapshot};
 
 use std::{
     cell::RefCell,
@@ -13,7 +13,6 @@ use std::{
 };
 
 use futures::{
-    future,
     sync::{
         mpsc::{unbounded, UnboundedReceiver, UnboundedSender},
         oneshot,
@@ -34,17 +33,20 @@ const TEST_SEED: [u8; 16] = [
 
 pub enum TestMessages {
     WaitForLeaderId {
-        result: UnboundedSender<TestMessages>,
+        result: UnboundedSender<u64>,
         old_leader: Option<u64>,
     },
-    LeaderId {
-        id: u64,
+    GetSnapshot {
+        result: UnboundedSender<Snapshot>,
+    },
+    WaitForSnapshotApply {
+        result: UnboundedSender<()>,
     },
 }
 
 /// Drives a Node in the test context.
 pub struct NodeExecutor {
-    node: Node,
+    node: RefCell<Node>,
     msg_recv: UnboundedReceiver<TestMessages>,
     node_handle_recv: oneshot::Receiver<()>,
     pending_requests: Vec<RefCell<TestMessages>>,
@@ -56,7 +58,7 @@ impl NodeExecutor {
         let (node_handle, node_handle_recv) = NodeHandle::new();
         (
             NodeExecutor {
-                node,
+                node: RefCell::new(node),
                 msg_recv,
                 node_handle_recv,
                 pending_requests: Vec::new(),
@@ -67,20 +69,34 @@ impl NodeExecutor {
     }
 
     fn process_pending_requests(&mut self) {
-        let leader = self.node.get_leader_id();
-
+        let node = self.node.borrow_mut();
         self.pending_requests.retain(|r| {
             let mut r = r.borrow_mut();
             match *r {
-                TestMessages::WaitForLeaderId { ref mut result, old_leader } => {
+                TestMessages::WaitForLeaderId {
+                    ref mut result,
+                    old_leader,
+                } => {
+                    let leader = node.get_leader_id();
                     if leader != 0 && Some(leader) != old_leader {
-                        let _ = result.unbounded_send(TestMessages::LeaderId { id: leader });
+                        let _ = result.unbounded_send(leader);
                         false
                     } else {
                         true
                     }
                 }
-                _ => false,
+                TestMessages::GetSnapshot { ref mut result } => {
+                    let _ = result.unbounded_send(node.create_snapshot().unwrap());
+                    false
+                }
+                TestMessages::WaitForSnapshotApply { ref mut result } => {
+                    if node.applied_snapshot() {
+                        let _ = result.unbounded_send(());
+                        false
+                    } else {
+                        true
+                    }
+                }
             }
         })
     }
@@ -95,7 +111,7 @@ impl Future for NodeExecutor {
             return Ok(Ready(()));
         }
 
-        self.node.poll().unwrap();
+        self.node.borrow_mut().poll().unwrap();
         loop {
             match self.msg_recv.poll().unwrap() {
                 Ready(Some(req)) => {
@@ -214,38 +230,33 @@ pub fn setup_nodes(nodes: Vec<Peer>, listen_ports: Vec<u16>) -> NodesMap {
 /// Collect the leader id from each nodes, checks that all selected the same leader and returns
 /// the leader id.
 pub fn collect_leader_ids(nodes_map: &NodesMap, old_leader_id: Option<u64>) -> u64 {
-    let result_receivers = nodes_map
-        .iter()
-        .map(|(_, (_, s))| {
-            let (sender, receiver) = unbounded();
+    let receiver = {
+        let (sender, receiver) = unbounded();
+        nodes_map.iter().for_each(|(_, (_, s))| {
             s.unbounded_send(TestMessages::WaitForLeaderId {
-                result: sender,
+                result: sender.clone(),
                 old_leader: old_leader_id,
             }).unwrap();
-            receiver.into_future().map_err(|e| e.0).map(|v| match v.0 {
-                Some(TestMessages::LeaderId { id }) => Some(id),
-                _ => None,
-            })
-        }).collect::<Vec<_>>();
+        });
+        receiver
+    };
 
-    let leader_ids = current_thread::block_on_all(future::join_all(result_receivers)).unwrap();
+    let leader_ids = current_thread::block_on_all(receiver.collect()).unwrap();
 
     assert_eq!(nodes_map.len(), leader_ids.len());
     if nodes_map.len() > 1 {
-        leader_ids
-            .into_iter()
-            .fold(None, |leader_id, id| {
-                if leader_id.is_none() {
-                    assert_ne!(Some(0), id);
-                    id
-                } else {
-                    assert_eq!(leader_id, id);
-                    leader_id
-                }
-            }).expect("Leader id needs to be not None!")
+        leader_ids.into_iter().fold(0, |leader_id, id| {
+            if leader_id == 0 {
+                assert_ne!(0, id);
+                id
+            } else {
+                assert_eq!(leader_id, id);
+                leader_id
+            }
+        })
     } else {
-        assert!(nodes_map.contains_key(&leader_ids[0].unwrap()));
-        leader_ids[0].unwrap()
+        assert!(nodes_map.contains_key(&leader_ids[0]));
+        leader_ids[0]
     }
 }
 
@@ -285,4 +296,45 @@ pub fn generate_random_data(count: usize) -> HashMap<Vec<u8>, Vec<u8>> {
     }
 
     data
+}
+
+/// Create a snapshot on each node and compare all of them.
+pub fn compare_node_snapshots(nodes_map: &NodesMap) {
+    let receiver = {
+        let (sender, receiver) = unbounded();
+        nodes_map.iter().for_each(|(_, (_, s))| {
+            s.unbounded_send(TestMessages::GetSnapshot {
+                result: sender.clone(),
+            }).unwrap();
+        });
+        receiver
+    };
+
+    let snapshots = current_thread::block_on_all(receiver.collect()).unwrap();
+
+    assert_eq!(nodes_map.len(), snapshots.len());
+    if nodes_map.len() > 1 {
+        snapshots.into_iter().fold(None, |snapshot, current| {
+            if snapshot.is_none() {
+                Some(current)
+            } else {
+                assert_eq!(snapshot, Some(current));
+                snapshot
+            }
+        });
+    } else {
+        panic!("Only one snapshot");
+    }
+}
+
+pub fn wait_for_snapshot_applied(nodes_map: &NodesMap, node_id: u64) {
+    let (sender, receiver) = unbounded();
+    nodes_map
+        .get(&node_id)
+        .unwrap()
+        .1
+        .unbounded_send(TestMessages::WaitForSnapshotApply { result: sender })
+        .unwrap();
+
+    current_thread::block_on_all(receiver.collect()).unwrap();
 }

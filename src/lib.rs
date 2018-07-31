@@ -30,3 +30,4 @@ mod storage;
 
 pub use client::Client;
 pub use node::{Node, Peer};
+pub use raft::eraftpb::Snapshot;
