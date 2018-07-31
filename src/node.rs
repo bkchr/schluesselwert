@@ -410,6 +410,11 @@ impl Peer {
     pub fn get_id(&self) -> u64 {
         self.0.id
     }
+
+    /// Returns the address of the `Peer`.
+    pub fn get_addr(&self) -> SocketAddr {
+        bincode::deserialize(&self.0.context.as_ref().unwrap()).unwrap()
+    }
 }
 
 impl Into<raft::Peer> for Peer {
