@@ -10,6 +10,13 @@ pub enum Protocol {
         id: u64,
         res: RequestResult,
     },
+    RequestChangeConf {
+        id: u64,
+        req: RequestChangeConf,
+    },
+    RequestChangeConfResult {
+        id: u64,
+    },
     Raft {
         msg: Vec<u8>,
     },
@@ -40,4 +47,18 @@ pub enum RequestResult {
     Get { value: Option<Vec<u8>> },
     Delete { successful: bool },
     Scan { keys: Option<Vec<Vec<u8>>> },
+}
+
+/// Requests that change the config of the cluster.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub enum RequestChangeConf {
+    /// Add a node to the cluster.
+    AddNode {
+        node_id: u64,
+        node_addr: SocketAddr,
+    },
+    /// Remove a node from the cluster.
+    RemoveNode {
+        node_id: u64,
+    }
 }

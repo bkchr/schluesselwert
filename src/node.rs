@@ -48,16 +48,36 @@ impl RequestIdentifier {
     }
 }
 
+/// The context object used by a `ConfChange`.
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize, Eq, Hash)]
+pub struct ConfChangeContext {
+    node_addr: Option<SocketAddr>,
+    req_id: RequestIdentifier,
+}
+
+impl ConfChangeContext {
+    pub fn new(req_id: RequestIdentifier, node_addr: Option<SocketAddr>) -> ConfChangeContext {
+        ConfChangeContext { req_id, node_addr }
+    }
+}
+
 /// A message for the node.
 pub enum NodeMessage {
+    /// Propose a request (Get,Set,Delete,Scan)
     Propose {
         req: Vec<u8>,
         response: UnboundedSender<Protocol>,
         id: RequestIdentifier,
     },
-    Raft {
-        msg: Message,
+    /// Propose a config change.
+    ProposeConfChange {
+        req: ConfChange,
+        node_addr: Option<SocketAddr>,
+        response: UnboundedSender<Protocol>,
+        id: RequestIdentifier,
     },
+    /// A message from the raft consensus protocol.
+    Raft { msg: Message },
 }
 
 pub struct Node {
@@ -188,15 +208,23 @@ impl Node {
                 let request: Request = bincode::deserialize(&entry.get_data())
                     .expect("Entry data needs to be a valid `Request`!");
                 let id: RequestIdentifier = bincode::deserialize(&entry.get_context())
-                    .expect("Entry context needs to be a valid `RequestIdentifier`!");
+                    .expect("Entrya context needs to be a valid `RequestIdentifier`!");
                 self.handle_commited_request(request, id, entry.index);
             }
             EntryType::EntryConfChange => {
                 let conf_change: ConfChange = protobuf::parse_from_bytes(entry.get_data())
                     .expect("Entry data needs to be a valid `ConfChange`!");
-                let id: RequestIdentifier = bincode::deserialize(&entry.get_context())
-                    .expect("Entry context needs to be a valid `RequestIdentifier`!");
-                self.handle_commited_conf_change(conf_change, id, entry.index);
+                let context: ConfChangeContext = match bincode::deserialize(&entry.get_context()) {
+                    Ok(context) => context,
+                    Err(_) => {
+                        // If now entries are in the store, Raft sends `ConfChange`s for the
+                        // intial node list. However, we already set this list and also use a
+                        // different kind of context. So, we silently ignore the error.
+                        // TODO: Log and maybe unify peer context and ConfChange context.
+                        return;
+                    }
+                };
+                self.handle_commited_conf_change(conf_change, context, entry.index);
             }
         }
     }
@@ -205,19 +233,38 @@ impl Node {
     fn handle_commited_conf_change(
         &mut self,
         conf_change: ConfChange,
-        id: RequestIdentifier,
+        context: ConfChangeContext,
         entry_index: u64,
     ) {
-        match conf_change.get_change_type() {
-            ConfChangeType::AddNode => {}
-            ConfChangeType::RemoveNode => {}
-            ConfChangeType::AddLearnerNode => unimplemented!(),
-        };
-
         let config_state = self.node.apply_conf_change(&conf_change);
         self.node
             .mut_store()
-            .set_conf_state(config_state, entry_index);
+            .set_conf_state(config_state, entry_index)
+            .expect("Sets ConfState");
+
+        match conf_change.get_change_type() {
+            ConfChangeType::AddNode => {
+                self.peer_connections.add_peer(
+                    Peer::new(
+                        conf_change.get_node_id(),
+                        context
+                            .node_addr
+                            .expect("ConfChangeType::AddNode context requires node_addr"),
+                    ).into(),
+                );
+            }
+            ConfChangeType::RemoveNode => {
+                self.peer_connections.remove_peer(conf_change.get_node_id());
+            }
+            ConfChangeType::AddLearnerNode => unimplemented!(),
+        };
+
+        self.send_request_response(
+            context.req_id,
+            Protocol::RequestChangeConfResult {
+                id: context.req_id.get_client_request_id(),
+            },
+        );
     }
 
     /// Handle a request that was committed.
@@ -227,8 +274,6 @@ impl Node {
         id: RequestIdentifier,
         entry_index: u64,
     ) {
-        let response_sender = self.request_response.remove(&id);
-
         let response = match request {
             Request::Set { key, value } => RequestResult::Set {
                 successful: self.node.mut_store().set(key, &value, entry_index).is_ok(),
@@ -244,11 +289,19 @@ impl Node {
             },
         };
 
-        if let Some(sender) = response_sender {
-            let _ = sender.unbounded_send(Protocol::RequestResult {
+        self.send_request_response(
+            id,
+            Protocol::RequestResult {
                 id: id.get_client_request_id(),
                 res: response,
-            });
+            },
+        );
+    }
+
+    /// Send the request response
+    fn send_request_response(&mut self, id: RequestIdentifier, response: Protocol) {
+        if let Some(sender) = self.request_response.remove(&id) {
+            let _ = sender.unbounded_send(response);
         }
     }
 
@@ -267,11 +320,34 @@ impl Node {
                 }
                 NodeMessage::Propose { id, req, response } => {
                     if self.is_leader() {
-                        // TODO: Make sure that we do not overwrite anything!
-                        self.request_response.insert(id, response);
-                        self.node
-                            .propose(bincode::serialize(&id).unwrap(), req)
-                            .expect("propose");
+                        if !self.request_response.contains_key(&id) {
+                            self.request_response.insert(id, response);
+                            self.node
+                                .propose(bincode::serialize(&id).unwrap(), req)
+                                .expect("Propose an entry");
+                        }
+                    } else {
+                        let _ = response.unbounded_send(Protocol::NotLeader {
+                            leader_addr: self
+                                .peer_connections
+                                .get_addr_of_peer(self.node.raft.leader_id),
+                        });
+                    }
+                }
+                NodeMessage::ProposeConfChange {
+                    id,
+                    req,
+                    response,
+                    node_addr,
+                } => {
+                    if self.is_leader() {
+                        if !self.request_response.contains_key(&id) {
+                            self.request_response.insert(id, response);
+                            let context = ConfChangeContext::new(id, node_addr);
+                            self.node
+                                .propose_conf_change(bincode::serialize(&context).unwrap(), req)
+                                .expect("Propose a ConfChange");
+                        }
                     } else {
                         let _ = response.unbounded_send(Protocol::NotLeader {
                             leader_addr: self

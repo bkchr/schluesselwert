@@ -1,14 +1,14 @@
 use connection::{Connection, ConnectionIdentifier};
 use error::*;
 use node::{NodeMessage, RequestIdentifier};
-use protocol::Protocol;
+use protocol::{Protocol, RequestChangeConf};
 
 use tokio::{
     self,
     net::{Incoming, TcpListener},
 };
 
-use raft::eraftpb::Message;
+use raft::eraftpb::{ConfChange, ConfChangeType, Message};
 
 use futures::{
     sync::{
@@ -174,6 +174,30 @@ impl IncomingConnection {
                 self.msg_sender
                     .unbounded_send(NodeMessage::Raft { msg: new_msg })
                     .is_ok()
+            }
+            Protocol::RequestChangeConf { id, req } => {
+                let mut conf_change = ConfChange::new();
+
+                let node_addr = match req {
+                    RequestChangeConf::AddNode { node_id, node_addr } => {
+                        conf_change.set_node_id(node_id);
+                        conf_change.set_change_type(ConfChangeType::AddNode);
+                        Some(node_addr)
+                    }
+                    RequestChangeConf::RemoveNode { node_id } => {
+                        conf_change.set_node_id(node_id);
+                        conf_change.set_change_type(ConfChangeType::RemoveNode);
+                        None
+                    }
+                };
+
+                self.msg_sender
+                    .unbounded_send(NodeMessage::ProposeConfChange {
+                        req: conf_change,
+                        node_addr,
+                        response: self.request_result.0.clone(),
+                        id: RequestIdentifier::new(id, self.id.clone()),
+                    }).is_ok()
             }
             _ => true,
         }

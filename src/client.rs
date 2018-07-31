@@ -1,6 +1,6 @@
 use connection::Connection;
 use error::*;
-use protocol::{Protocol, Request, RequestResult};
+use protocol::{Protocol, Request, RequestChangeConf, RequestResult};
 
 use std::{collections::HashMap, net::SocketAddr, thread};
 
@@ -22,8 +22,9 @@ use bincode;
 
 use rand::{self, Rng};
 
+//TODO: Make requests timeout
 pub struct Client {
-    send_req: UnboundedSender<(Request, oneshot::Sender<RequestResult>)>,
+    send_req: UnboundedSender<ClusterRequest>,
 }
 
 impl Client {
@@ -40,13 +41,15 @@ impl Client {
         value: V,
     ) -> impl Future<Item = (), Error = Error> {
         let (sender, receiver) = oneshot::channel();
-        let _ = self.send_req.unbounded_send((
-            Request::Set {
-                key: key.into(),
-                value: value.into(),
-            },
-            sender,
-        ));
+
+        let req = Request::Set {
+            key: key.into(),
+            value: value.into(),
+        };
+
+        let _ = self
+            .send_req
+            .unbounded_send(ClusterRequest::Request { req, sender });
 
         receiver.map_err(|e| e.into()).and_then(|rr| match rr {
             RequestResult::Set { successful } => if successful {
@@ -64,9 +67,11 @@ impl Client {
         key: K,
     ) -> impl Future<Item = Option<V>, Error = Error> {
         let (sender, receiver) = oneshot::channel();
+        let req = Request::Get { key: key.into() };
+
         let _ = self
             .send_req
-            .unbounded_send((Request::Get { key: key.into() }, sender));
+            .unbounded_send(ClusterRequest::Request { req, sender });
 
         receiver.map_err(|e| e.into()).and_then(|rr| match rr {
             RequestResult::Get { value } => Ok(value.map(|v| v.into())),
@@ -77,9 +82,11 @@ impl Client {
     /// Delete key and value.
     pub fn delete<K: Into<Vec<u8>>>(&mut self, key: K) -> impl Future<Item = (), Error = Error> {
         let (sender, receiver) = oneshot::channel();
+        let req = Request::Delete { key: key.into() };
+
         let _ = self
             .send_req
-            .unbounded_send((Request::Delete { key: key.into() }, sender));
+            .unbounded_send(ClusterRequest::Request { req, sender });
 
         receiver.map_err(|e| e.into()).and_then(|rr| match rr {
             RequestResult::Delete { successful } => if successful {
@@ -94,7 +101,10 @@ impl Client {
     /// Scan for all keys.
     pub fn scan<K: From<Vec<u8>>>(&mut self) -> impl Future<Item = Vec<K>, Error = Error> {
         let (sender, receiver) = oneshot::channel();
-        let _ = self.send_req.unbounded_send((Request::Scan, sender));
+        let req = Request::Scan;
+        let _ = self
+            .send_req
+            .unbounded_send(ClusterRequest::Request { req, sender });
 
         receiver.map_err(|e| e.into()).and_then(|rr| match rr {
             RequestResult::Scan { keys } => if let Some(keys) = keys {
@@ -105,6 +115,53 @@ impl Client {
             r @ _ => Err(Error::IncorrectRequestResult(r)),
         })
     }
+
+    /// Add a node to the cluster.
+    pub fn add_node_to_cluster(
+        &mut self,
+        node_id: u64,
+        node_addr: SocketAddr,
+    ) -> impl Future<Item = (), Error = Error> {
+        let (sender, receiver) = oneshot::channel();
+        let req = RequestChangeConf::AddNode { node_id, node_addr };
+
+        let _ = self
+            .send_req
+            .unbounded_send(ClusterRequest::ChangeConf { req, sender });
+
+        receiver.map_err(|e| e.into())
+    }
+
+    /// Remove a node from the cluster.
+    pub fn remove_node_from_cluster(
+        &mut self,
+        node_id: u64,
+    ) -> impl Future<Item = (), Error = Error> {
+        let (sender, receiver) = oneshot::channel();
+        let req = RequestChangeConf::RemoveNode { node_id };
+
+        let _ = self
+            .send_req
+            .unbounded_send(ClusterRequest::ChangeConf { req, sender });
+
+        receiver.map_err(|e| e.into())
+    }
+}
+
+enum ClusterRequest {
+    Request {
+        req: Request,
+        sender: oneshot::Sender<RequestResult>,
+    },
+    ChangeConf {
+        req: RequestChangeConf,
+        sender: oneshot::Sender<()>,
+    },
+}
+
+enum ClusterRequestReponseSender {
+    Request(oneshot::Sender<RequestResult>),
+    ChangeConf(oneshot::Sender<()>),
 }
 
 struct ClusterConnection {
@@ -114,18 +171,16 @@ struct ClusterConnection {
     connect: Option<ConnectFuture>,
     /// Stores the active connection to the cluster.
     connection: Option<Connection>,
-    recv_send_req: UnboundedReceiver<(Request, oneshot::Sender<RequestResult>)>,
+    recv_send_req: UnboundedReceiver<ClusterRequest>,
     /// The id of the next request.
     next_request_id: u64,
     /// All requests that are currently active (not answered by the cluster).
-    active_requests: HashMap<u64, (Vec<u8>, oneshot::Sender<RequestResult>)>,
+    active_requests: HashMap<u64, (Protocol, ClusterRequestReponseSender)>,
 }
 
 impl ClusterConnection {
     /// Creates a `ClusterConnection` instances and runs it in a thread.
-    fn create_and_run(
-        nodes: Vec<SocketAddr>,
-    ) -> UnboundedSender<(Request, oneshot::Sender<RequestResult>)> {
+    fn create_and_run(nodes: Vec<SocketAddr>) -> UnboundedSender<ClusterRequest> {
         let (sender, recv_send_req) = unbounded();
 
         thread::spawn(move || {
@@ -183,17 +238,13 @@ impl ClusterConnection {
     /// leader and thus we need to resend all the data to the leader.
     fn resend_active_requests(&mut self) {
         // make borrowck happy!
-        fn resend<V2>(
-            active_requests: &HashMap<u64, (Vec<u8>, V2)>,
+        fn resend(
+            active_requests: &HashMap<u64, (Protocol, ClusterRequestReponseSender)>,
             connection: &mut Connection,
         ) -> Result<()> {
-            active_requests.iter().try_for_each(|(k, (v, _))| {
-                connection
-                    .start_send(Protocol::Request {
-                        id: *k,
-                        data: v.clone(),
-                    }).map(|_| ())
-            })
+            active_requests
+                .iter()
+                .try_for_each(|(_, (v, _))| connection.start_send(v.clone()).map(|_| ()))
         }
 
         let res = resend(&self.active_requests, self.connection.as_mut().unwrap());
@@ -238,7 +289,24 @@ impl ClusterConnection {
             }
             Protocol::RequestResult { id, res } => {
                 if let Some((_, sender)) = self.active_requests.remove(&id) {
-                    let _ = sender.send(res);
+                    match sender {
+                        ClusterRequestReponseSender::Request(sender) => {
+                            let _ = sender.send(res);
+                        }
+                        _ => {}
+                    };
+                }
+
+                true
+            }
+            Protocol::RequestChangeConfResult { id } => {
+                if let Some((_, sender)) = self.active_requests.remove(&id) {
+                    match sender {
+                        ClusterRequestReponseSender::ChangeConf(sender) => {
+                            let _ = sender.send(());
+                        }
+                        _ => {}
+                    };
                 }
 
                 true
@@ -255,19 +323,27 @@ impl ClusterConnection {
             }
 
             match self.recv_send_req.poll() {
-                Ok(Ready(Some((req, sender)))) => {
-                    let data = bincode::serialize(&req).expect("Serializes request");
+                Ok(Ready(Some(req))) => {
                     let id = self.next_request_id;
                     self.next_request_id += 1;
 
-                    self.active_requests.insert(id, (data.clone(), sender));
+                    let (req, sender) = match req {
+                        ClusterRequest::Request { req, sender } => {
+                            let data = bincode::serialize(&req).expect("Serializes request");
+                            (
+                                Protocol::Request { id, data },
+                                ClusterRequestReponseSender::Request(sender),
+                            )
+                        }
+                        ClusterRequest::ChangeConf { req, sender } => (
+                            Protocol::RequestChangeConf { id, req },
+                            ClusterRequestReponseSender::ChangeConf(sender),
+                        ),
+                    };
 
-                    if let Err(e) = self
-                        .connection
-                        .as_mut()
-                        .unwrap()
-                        .start_send(Protocol::Request { id, data })
-                    {
+                    self.active_requests.insert(id, (req.clone(), sender));
+
+                    if let Err(e) = self.connection.as_mut().unwrap().start_send(req) {
                         // TODO: maybe do not reconnect directly
                         eprintln!("poll_send_reqs error: {:?}", e);
                         // reconnect to the cluster
