@@ -49,6 +49,8 @@ pub enum Error {
     RequestNotSuccessful,
     #[fail(display = "Request canceled")]
     RequestCanceled,
+    #[fail(display = "Cluster majority down")]
+    ClusterMajorityDown,
 }
 
 impl PartialEq for Error {

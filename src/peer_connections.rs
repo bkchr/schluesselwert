@@ -163,6 +163,11 @@ impl PeerConnections {
                 .push(BuildingConnection::from(peer));
         }
     }
+
+    /// Returns the number of active connections to peers.
+    pub fn get_active_connections(&self) -> usize {
+        self.connections.len()
+    }
 }
 
 impl Future for PeerConnections {

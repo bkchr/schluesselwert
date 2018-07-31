@@ -315,6 +315,14 @@ impl Node {
         self.node.raft.id == self.node.raft.leader_id
     }
 
+    fn send_not_leader(&self, response: UnboundedSender<Protocol>) {
+        let _ = response.unbounded_send(Protocol::NotLeader {
+            leader_addr: self
+                .peer_connections
+                .get_addr_of_peer(self.node.raft.leader_id),
+        });
+    }
+
     fn poll_recv_msgs(&mut self) -> Poll<(), ()> {
         loop {
             let msg = try_ready!(self.recv_msgs.poll())
@@ -326,18 +334,20 @@ impl Node {
                 }
                 NodeMessage::Propose { id, req, response } => {
                     if self.is_leader() {
-                        if !self.request_response.contains_key(&id) {
-                            self.request_response.insert(id, response);
-                            self.node
-                                .propose(bincode::serialize(&id).unwrap(), req)
-                                .expect("Propose an entry");
+                        if self.is_cluster_majority_running() {
+                            if !self.request_response.contains_key(&id) {
+                                self.request_response.insert(id, response);
+                                self.node
+                                    .propose(bincode::serialize(&id).unwrap(), req)
+                                    .expect("Propose an entry");
+                            }
+                        } else {
+                            let _ = response.unbounded_send(Protocol::ClusterMajorityDown {
+                                id: id.get_client_request_id(),
+                            });
                         }
                     } else {
-                        let _ = response.unbounded_send(Protocol::NotLeader {
-                            leader_addr: self
-                                .peer_connections
-                                .get_addr_of_peer(self.node.raft.leader_id),
-                        });
+                        self.send_not_leader(response);
                     }
                 }
                 NodeMessage::ProposeConfChange {
@@ -347,23 +357,31 @@ impl Node {
                     node_addr,
                 } => {
                     if self.is_leader() {
-                        if !self.request_response.contains_key(&id) {
-                            self.request_response.insert(id, response);
-                            let context = ConfChangeContext::new(id, node_addr);
-                            self.node
-                                .propose_conf_change(bincode::serialize(&context).unwrap(), req)
-                                .expect("Propose a ConfChange");
+                        if self.is_cluster_majority_running() {
+                            if !self.request_response.contains_key(&id) {
+                                self.request_response.insert(id, response);
+                                let context = ConfChangeContext::new(id, node_addr);
+                                self.node
+                                    .propose_conf_change(bincode::serialize(&context).unwrap(), req)
+                                    .expect("Propose a ConfChange");
+                            }
+                        } else {
+                            let _ = response.unbounded_send(Protocol::ClusterMajorityDown {
+                                id: id.get_client_request_id(),
+                            });
                         }
                     } else {
-                        let _ = response.unbounded_send(Protocol::NotLeader {
-                            leader_addr: self
-                                .peer_connections
-                                .get_addr_of_peer(self.node.raft.leader_id),
-                        });
+                        self.send_not_leader(response);
                     }
                 }
             }
         }
+    }
+
+    /// Checks if the majority of the cluster is still running.
+    fn is_cluster_majority_running(&self) -> bool {
+        let progress = self.node.status().progress;
+        self.peer_connections.get_active_connections() >= raft::quorum(progress.len())
     }
 
     /// Returns the id of the leader.

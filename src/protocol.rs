@@ -25,6 +25,10 @@ pub enum Protocol {
     NotLeader {
         leader_addr: Option<SocketAddr>,
     },
+    /// The majority of the cluster is down.
+    ClusterMajorityDown {
+        id: u64,
+    }
 }
 
 /// The requests to the store.

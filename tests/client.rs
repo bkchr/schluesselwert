@@ -43,12 +43,15 @@ fn check_data_with_get(mut test_data: HashMap<Vec<u8>, Vec<u8>>, client: &mut Cl
 #[test]
 fn set_and_get_values() {
     let (nodes, listen_ports) = create_nodes(5, 20030);
-    let _nodes_map = setup_nodes(nodes, listen_ports.clone());
+    let nodes_map = setup_nodes(nodes, listen_ports.clone());
 
     let nodes = listen_ports_to_socket_addrs(listen_ports);
     let mut client = Client::new(nodes);
 
     let test_data = generate_random_data(1000);
+    // wait for cluster to start
+    collect_leader_ids(&nodes_map, None);
+
     current_thread::block_on_all(future::join_all(
         test_data
             .iter()
@@ -61,12 +64,14 @@ fn set_and_get_values() {
 #[test]
 fn set_delete_and_get_and_scan() {
     let (nodes, listen_ports) = create_nodes(5, 20040);
-    let _nodes_map = setup_nodes(nodes, listen_ports.clone());
+    let nodes_map = setup_nodes(nodes, listen_ports.clone());
 
     let nodes = listen_ports_to_socket_addrs(listen_ports);
     let mut client = Client::new(nodes);
 
     let test_data = generate_random_data(1000);
+    // wait for cluster to start
+    collect_leader_ids(&nodes_map, None);
     current_thread::block_on_all(future::join_all(
         test_data
             .iter()
@@ -96,12 +101,14 @@ fn set_delete_and_get_and_scan() {
 #[test]
 fn set_and_scan() {
     let (nodes, listen_ports) = create_nodes(5, 20050);
-    let _nodes_map = setup_nodes(nodes, listen_ports.clone());
+    let nodes_map = setup_nodes(nodes, listen_ports.clone());
 
     let nodes = listen_ports_to_socket_addrs(listen_ports);
     let mut client = Client::new(nodes);
 
     let mut test_data = generate_random_data(1000);
+    // wait for cluster to start
+    collect_leader_ids(&nodes_map, None);
     current_thread::block_on_all(future::join_all(
         test_data
             .iter()
@@ -124,6 +131,8 @@ fn set_500_add_node_and_set_500_more() {
     let mut client = Client::new(nodes);
 
     let test_data = generate_random_data(1000);
+    // wait for cluster to start
+    collect_leader_ids(&nodes_map, None);
     current_thread::block_on_all(future::join_all(
         test_data
             .iter()
@@ -172,6 +181,8 @@ fn remove_leader_and_re_add_node() {
     let mut client = Client::new(nodes);
 
     let test_data = generate_random_data(1000);
+    // wait for cluster to start
+    collect_leader_ids(&nodes_map, None);
     current_thread::block_on_all(future::join_all(
         test_data
             .iter()

@@ -51,14 +51,17 @@ impl Client {
             .send_req
             .unbounded_send(ClusterRequest::Request { req, sender });
 
-        receiver.map_err(|e| e.into()).and_then(|rr| match rr {
-            RequestResult::Set { successful } => if successful {
-                Ok(())
-            } else {
-                Err(Error::RequestNotSuccessful)
-            },
-            r @ _ => Err(Error::IncorrectRequestResult(r)),
-        })
+        receiver
+            .map_err(|e| Error::from(e))
+            .flatten()
+            .and_then(|rr| match rr {
+                RequestResult::Set { successful } => if successful {
+                    Ok(())
+                } else {
+                    Err(Error::RequestNotSuccessful)
+                },
+                r @ _ => Err(Error::IncorrectRequestResult(r)),
+            })
     }
 
     /// Get the value for a key.
@@ -73,10 +76,13 @@ impl Client {
             .send_req
             .unbounded_send(ClusterRequest::Request { req, sender });
 
-        receiver.map_err(|e| e.into()).and_then(|rr| match rr {
-            RequestResult::Get { value } => Ok(value.map(|v| v.into())),
-            r @ _ => Err(Error::IncorrectRequestResult(r)),
-        })
+        receiver
+            .map_err(|e| Error::from(e))
+            .flatten()
+            .and_then(|rr| match rr {
+                RequestResult::Get { value } => Ok(value.map(|v| v.into())),
+                r @ _ => Err(Error::IncorrectRequestResult(r)),
+            })
     }
 
     /// Delete key and value.
@@ -88,14 +94,17 @@ impl Client {
             .send_req
             .unbounded_send(ClusterRequest::Request { req, sender });
 
-        receiver.map_err(|e| e.into()).and_then(|rr| match rr {
-            RequestResult::Delete { successful } => if successful {
-                Ok(())
-            } else {
-                Err(Error::RequestNotSuccessful)
-            },
-            r @ _ => Err(Error::IncorrectRequestResult(r)),
-        })
+        receiver
+            .map_err(|e| Error::from(e))
+            .flatten()
+            .and_then(|rr| match rr {
+                RequestResult::Delete { successful } => if successful {
+                    Ok(())
+                } else {
+                    Err(Error::RequestNotSuccessful)
+                },
+                r @ _ => Err(Error::IncorrectRequestResult(r)),
+            })
     }
 
     /// Scan for all keys.
@@ -106,14 +115,17 @@ impl Client {
             .send_req
             .unbounded_send(ClusterRequest::Request { req, sender });
 
-        receiver.map_err(|e| e.into()).and_then(|rr| match rr {
-            RequestResult::Scan { keys } => if let Some(keys) = keys {
-                Ok(keys.into_iter().map(|k| k.into()).collect())
-            } else {
-                Err(Error::RequestNotSuccessful)
-            },
-            r @ _ => Err(Error::IncorrectRequestResult(r)),
-        })
+        receiver
+            .map_err(|e| Error::from(e))
+            .flatten()
+            .and_then(|rr| match rr {
+                RequestResult::Scan { keys } => if let Some(keys) = keys {
+                    Ok(keys.into_iter().map(|k| k.into()).collect())
+                } else {
+                    Err(Error::RequestNotSuccessful)
+                },
+                r @ _ => Err(Error::IncorrectRequestResult(r)),
+            })
     }
 
     /// Add a node to the cluster.
@@ -129,7 +141,7 @@ impl Client {
             .send_req
             .unbounded_send(ClusterRequest::ChangeConf { req, sender });
 
-        receiver.map_err(|e| e.into())
+        receiver.map_err(|e| Error::from(e)).flatten()
     }
 
     /// Remove a node from the cluster.
@@ -144,24 +156,24 @@ impl Client {
             .send_req
             .unbounded_send(ClusterRequest::ChangeConf { req, sender });
 
-        receiver.map_err(|e| e.into())
+        receiver.map_err(|e| Error::from(e)).flatten()
     }
 }
 
 enum ClusterRequest {
     Request {
         req: Request,
-        sender: oneshot::Sender<RequestResult>,
+        sender: oneshot::Sender<Result<RequestResult>>,
     },
     ChangeConf {
         req: RequestChangeConf,
-        sender: oneshot::Sender<()>,
+        sender: oneshot::Sender<Result<()>>,
     },
 }
 
 enum ClusterRequestReponseSender {
-    Request(oneshot::Sender<RequestResult>),
-    ChangeConf(oneshot::Sender<()>),
+    Request(oneshot::Sender<Result<RequestResult>>),
+    ChangeConf(oneshot::Sender<Result<()>>),
 }
 
 struct ClusterConnection {
@@ -296,7 +308,7 @@ impl ClusterConnection {
                 if let Some((_, sender)) = self.active_requests.remove(&id) {
                     match sender {
                         ClusterRequestReponseSender::Request(sender) => {
-                            sender.send(res).unwrap();
+                            let _ = sender.send(Ok(res));
                         }
                         _ => {}
                     };
@@ -308,9 +320,23 @@ impl ClusterConnection {
                 if let Some((_, sender)) = self.active_requests.remove(&id) {
                     match sender {
                         ClusterRequestReponseSender::ChangeConf(sender) => {
-                            let _ = sender.send(());
+                            let _ = sender.send(Ok(()));
                         }
                         _ => {}
+                    };
+                }
+
+                true
+            }
+            Protocol::ClusterMajorityDown { id } => {
+                if let Some((_, sender)) = self.active_requests.remove(&id) {
+                    match sender {
+                        ClusterRequestReponseSender::ChangeConf(sender) => {
+                            let _ = sender.send(Err(Error::ClusterMajorityDown));
+                        }
+                        ClusterRequestReponseSender::Request(sender) => {
+                            let _ = sender.send(Err(Error::ClusterMajorityDown));
+                        }
                     };
                 }
 
