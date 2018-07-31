@@ -74,7 +74,10 @@ impl Node {
         listen_port: u16,
         storage_path: T,
     ) -> Result<Node> {
-        let storage = Storage::new(storage_path)?;
+        let storage = Storage::new(
+            storage_path,
+            Some(peers.iter().map(|p| p.get_id()).collect()),
+        )?;
         let config = Config {
             // The unique ID for the Raft node.
             id,

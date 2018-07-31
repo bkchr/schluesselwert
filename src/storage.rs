@@ -9,7 +9,7 @@ use raft::{
 
 use rocksdb::{DBRawIterator, Options, DB};
 
-use byteorder::{ByteOrder, LittleEndian};
+use byteorder::{ByteOrder, BigEndian};
 
 use protobuf::Message;
 
@@ -44,13 +44,13 @@ pub struct Storage {
 impl Storage {
     /// Create a new `Storage` instance
     /// path - The path where the data of the Node is stored/should be stored.
-    pub fn new<T: AsRef<Path>>(path: T) -> Result<Storage> {
+    pub fn new<T: AsRef<Path>>(path: T, nodes: Option<Vec<u64>>) -> Result<Storage> {
         let mut options = Options::default();
         options.create_if_missing(true);
 
-        let db = DB::open(&options, path)?;
+        let mut db = DB::open(&options, path)?;
         let last_index = extract_last_index(&db)?;
-        let (hard_state, conf_state) = extract_hard_and_conf_state(&db)?;
+        let (hard_state, conf_state) = extract_hard_and_conf_state(&mut db, nodes)?;
         let last_applied_index = extract_last_applied_index(&db)?;
         let compact_entry = extract_compact_entry(&db)?;
 
@@ -78,6 +78,10 @@ impl Storage {
 
     /// Append a list of entries.
     pub fn append_entries(&mut self, entries: &[Entry]) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+
         let last_index = self.last_index;
 
         entries.iter().try_for_each(|e| self.append_entry(e))?;
@@ -167,7 +171,7 @@ impl Storage {
     /// Set the last applied index.
     fn set_last_applied_index(&mut self, index: u64) -> Result<()> {
         let mut val = [0; 8];
-        LittleEndian::write_u64(&mut val, index);
+        BigEndian::write_u64(&mut val, index);
 
         self.db.put(LAST_APPLIED_INDEX_KEY, &val)?;
         self.last_applied_index = index;
@@ -250,7 +254,7 @@ impl RStorage for Storage {
             }
 
             size += value.len();
-            let entry = proto_message_from_bytes(&value)?;
+            let entry: Entry = proto_message_from_bytes(&value)?;
             result.push(entry);
             itr.next();
         }
@@ -332,7 +336,7 @@ fn remove_data_key_prefix(key: &[u8]) -> Result<Vec<u8>> {
 fn get_key_for_entry_index(idx: u64) -> [u8; 9] {
     let mut key = [0; 9];
     key[0] = ENTRY_KEY_PREFIX;
-    LittleEndian::write_u64(&mut key[1..], idx);
+    BigEndian::write_u64(&mut key[1..], idx);
     key
 }
 
@@ -342,7 +346,7 @@ fn get_entry_index_from_key(key: &[u8]) -> Result<u64> {
         Err(Error::InvalidEntryIndexKey)?;
     }
 
-    Ok(LittleEndian::read_u64(&key[1..]))
+    Ok(BigEndian::read_u64(&key[1..]))
 }
 
 fn proto_message_as_bytes(msg: &Message) -> Result<Vec<u8>> {
@@ -376,7 +380,10 @@ fn extract_last_index(db: &DB) -> Result<Option<u64>> {
 }
 
 /// Extract the hard and conf state.
-fn extract_hard_and_conf_state(db: &DB) -> Result<(HardState, ConfState)> {
+fn extract_hard_and_conf_state(
+    db: &mut DB,
+    nodes: Option<Vec<u64>>,
+) -> Result<(HardState, ConfState)> {
     let hard_state = match db.get(HARD_STATE_KEY)? {
         Some(data) => proto_message_from_bytes(&data)?,
         None => HardState::default(),
@@ -384,7 +391,15 @@ fn extract_hard_and_conf_state(db: &DB) -> Result<(HardState, ConfState)> {
 
     let conf_state = match db.get(CONF_STATE_KEY)? {
         Some(data) => proto_message_from_bytes(&data)?,
-        None => ConfState::default(),
+        None => {
+            let mut conf_state = ConfState::default();
+            if let Some(nodes) = nodes {
+                conf_state.set_nodes(nodes);
+            }
+
+            db.put(CONF_STATE_KEY, &proto_message_as_bytes(&conf_state)?)?;
+            conf_state
+        }
     };
 
     Ok((hard_state, conf_state))
@@ -393,7 +408,7 @@ fn extract_hard_and_conf_state(db: &DB) -> Result<(HardState, ConfState)> {
 /// Extract the last applied index.
 fn extract_last_applied_index(db: &DB) -> Result<u64> {
     let last_applied_index = match db.get(LAST_APPLIED_INDEX_KEY)? {
-        Some(data) => LittleEndian::read_u64(&data),
+        Some(data) => BigEndian::read_u64(&data),
         None => 0,
     };
 
@@ -521,7 +536,7 @@ mod tests {
         let entries = create_random_entries(num_entries);
         let data = create_random_data(num_data);
 
-        let mut storage = Storage::new(path).unwrap();
+        let mut storage = Storage::new(path, Some(vec![1, 2])).unwrap();
 
         storage.append_entries(&entries).unwrap();
 
@@ -545,10 +560,27 @@ mod tests {
 
         {
             // recreate the Storage
-            let storage = Storage::new(&dir).unwrap();
+            let storage = Storage::new(&dir, None).unwrap();
 
             assert_eq!(1, storage.first_index().unwrap());
             assert_eq!(100, storage.last_index().unwrap());
+        }
+    }
+
+    #[test]
+    fn loading_nodes_without_overwriting() {
+        let dir = TempDir::new("first_last_recreation").unwrap();
+
+        {
+            let (storage, _, _) = create_random_storage(&dir, 100, 100);
+            assert_eq!(&[1, 2], &storage.conf_state.get_nodes()[..]);
+        }
+
+        {
+            // recreate the Storage
+            let storage = Storage::new(&dir, Some(vec![1, 2, 3])).unwrap();
+
+            assert_eq!(&[1, 2], &storage.conf_state.get_nodes()[..]);
         }
     }
 
@@ -575,7 +607,7 @@ mod tests {
 
         {
             // recreate the Storage
-            let storage = Storage::new(&dir).unwrap();
+            let storage = Storage::new(&dir, None).unwrap();
             assert_eq!(storage.hard_state, hard_state);
             assert_eq!(storage.conf_state, conf_state);
             assert_eq!(1, storage.first_index().unwrap());
@@ -601,7 +633,7 @@ mod tests {
 
         {
             // recreate the Storage
-            let storage = Storage::new(&dir).unwrap();
+            let storage = Storage::new(&dir, None).unwrap();
 
             assert_eq!(
                 &entries[39..49],
@@ -629,7 +661,7 @@ mod tests {
 
         {
             // recreate the Storage
-            let storage = Storage::new(&dir).unwrap();
+            let storage = Storage::new(&dir, None).unwrap();
 
             assert_eq!(
                 &entries[22..100],
@@ -637,6 +669,32 @@ mod tests {
             );
             assert_eq!(1, storage.first_index().unwrap());
             assert_eq!(100, storage.last_index().unwrap());
+        }
+    }
+
+    #[test]
+    fn entries_filter_with_no_limit_get_all() {
+        let dir = TempDir::new("entries_filter").unwrap();
+
+        let entries = {
+            let (storage, entries, _) = create_random_storage(&dir, 500, 100);
+
+            assert_eq!(
+                &entries[0..500],
+                &storage.entries(1, 501, raft::util::NO_LIMIT).unwrap()[..]
+            );
+
+            entries
+        };
+
+        {
+            // recreate the Storage
+            let storage = Storage::new(&dir, None).unwrap();
+
+            assert_eq!(
+                &entries[0..500],
+                &storage.entries(1, 501, raft::util::NO_LIMIT).unwrap()[..]
+            );
         }
     }
 
@@ -660,7 +718,7 @@ mod tests {
 
         {
             // recreate the Storage
-            let storage = Storage::new(&dir).unwrap();
+            let storage = Storage::new(&dir, None).unwrap();
 
             assert_eq!(
                 &entries[19..21],
@@ -687,7 +745,7 @@ mod tests {
 
         {
             // recreate the Storage
-            let storage = Storage::new(&dir).unwrap();
+            let storage = Storage::new(&dir, None).unwrap();
 
             assert_eq!(
                 &entries[19..20],
@@ -744,7 +802,7 @@ mod tests {
 
         {
             // recreate the Storage
-            let mut storage = Storage::new(&dir).unwrap();
+            let mut storage = Storage::new(&dir, None).unwrap();
 
             check_data(&mut storage, &data, 0, 100, true);
         }
@@ -769,7 +827,7 @@ mod tests {
 
         {
             // recreate the Storage
-            let mut storage = Storage::new(&dir).unwrap();
+            let mut storage = Storage::new(&dir, None).unwrap();
 
             check_data(&mut storage, &data, 50, 50, true);
             check_data(&mut storage, &data, 0, 50, false);
@@ -794,7 +852,7 @@ mod tests {
 
         {
             // recreate the Storage
-            let mut storage = Storage::new(&dir).unwrap();
+            let mut storage = Storage::new(&dir, None).unwrap();
 
             let keys = storage.scan(101).unwrap();
             let mut data2 = data.clone();
@@ -836,7 +894,7 @@ mod tests {
     #[test]
     fn empty_storage() {
         let dir = TempDir::new("empty_storage").unwrap();
-        let storage = Storage::new(&dir).unwrap();
+        let storage = Storage::new(&dir, None).unwrap();
 
         assert_eq!(1, storage.first_index().unwrap());
         assert_eq!(0, storage.last_index().unwrap());
@@ -853,7 +911,7 @@ mod tests {
         let snapshot = storage.snapshot().unwrap();
 
         {
-            let mut storage2 = Storage::new(&dir1).unwrap();
+            let mut storage2 = Storage::new(&dir1, None).unwrap();
             storage2.apply_snapshot(&snapshot).unwrap();
             assert_eq!(100, storage2.last_applied_index);
             assert_eq!(101, storage2.first_index().unwrap());
@@ -861,7 +919,7 @@ mod tests {
             check_data(&mut storage2, &data, 0, 100, true);
         }
         {
-            let mut storage2 = Storage::new(&dir1).unwrap();
+            let mut storage2 = Storage::new(&dir1, None).unwrap();
             assert_eq!(100, storage2.last_applied_index);
             assert_eq!(101, storage2.first_index().unwrap());
             assert_eq!(None, storage2.get_entry(50).unwrap());
