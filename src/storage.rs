@@ -9,7 +9,7 @@ use raft::{
 
 use rocksdb::{DBRawIterator, Options, DB};
 
-use byteorder::{ByteOrder, BigEndian};
+use byteorder::{BigEndian, ByteOrder};
 
 use protobuf::Message;
 
@@ -268,7 +268,7 @@ impl RStorage for Storage {
                 Some(entry) => Ok(entry.term),
                 None => Err(StorageError::Unavailable)?,
             },
-            None => Ok(self.compact_entry.term),
+            None if idx == self.compact_entry.index => Ok(self.compact_entry.term),
             _ => Err(StorageError::Unavailable)?,
         }
     }

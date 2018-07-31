@@ -7,8 +7,8 @@ use storage::Storage;
 
 use raft::{
     self,
-    eraftpb::{ConfChange, ConfChangeType, Entry, EntryType, Message},
-    raw_node::RawNode,
+    eraftpb::{ConfChange, ConfChangeType, Entry, EntryType, Message, MessageType},
+    raw_node::{RawNode, SnapshotStatus},
     Config, Ready,
 };
 
@@ -113,11 +113,7 @@ impl Node {
             ..Default::default()
         };
 
-        let node = RawNode::new(
-            &config,
-            storage,
-            peers.iter().map(|p| p.clone().into()).collect(),
-        )?;
+        let node = RawNode::new(&config, storage, vec![])?;
         let timer = Interval::new(Instant::now(), Duration::from_millis(100));
         let peer_connections = PeerConnections::new(
             peers
@@ -152,8 +148,15 @@ impl Node {
         let msgs = ready.messages.drain(..);
         for msg in msgs {
             let peer = msg.to;
+            let is_snapshot = match msg.get_msg_type() {
+                MessageType::MsgSnapshot => true,
+                _ => false,
+            };
+
             if self.peer_connections.send_msg(msg).is_err() {
                 self.node.report_unreachable(peer);
+            } else if is_snapshot {
+                self.node.report_snapshot(peer, SnapshotStatus::Finish);
             }
         }
     }
