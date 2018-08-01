@@ -6,10 +6,7 @@ extern crate tokio;
 
 mod common;
 
-use common::{
-    collect_leader_ids, create_node, create_nodes, setup_nodes, setup_nodes_with_cluster_nodes,
-    NodesMap,
-};
+use common::*;
 
 #[test]
 fn with_one_node() {
@@ -78,8 +75,7 @@ fn killed_node_rejoins() {
         setup_nodes_with_cluster_nodes(vec![removed_node], vec![listen_port], None, nodes.clone());
     nodes_map.merge(new_nodes_map);
 
-    std::thread::sleep(std::time::Duration::from_secs(10));
-    let new_leader_id = collect_leader_ids(&nodes_map);
+    let new_leader_id = wait_for_same_leader(&nodes_map);
 
     assert_eq!(last_leader, new_leader_id);
 }

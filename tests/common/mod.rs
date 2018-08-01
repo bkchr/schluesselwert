@@ -50,6 +50,9 @@ pub enum TestMessages {
     WaitForMajorityDown {
         result: UnboundedSender<()>,
     },
+    GetLeaderId {
+        result: UnboundedSender<u64>,
+    },
 }
 
 /// Drives a Node in the test context.
@@ -99,6 +102,11 @@ impl NodeExecutor {
                     } else {
                         true
                     }
+                }
+                TestMessages::GetLeaderId { ref mut result } => {
+                    let leader = node.get_leader_id();
+                    let _ = result.unbounded_send(leader);
+                    false
                 }
                 TestMessages::GetSnapshot {
                     ref mut result,
@@ -312,8 +320,7 @@ pub fn setup_nodes_with_cluster_nodes(
                 n.clone(),
                 start_node(n, lp, cluster_nodes.clone(), db),
             )
-        })
-        .collect::<Vec<_>>();
+        }).collect::<Vec<_>>();
 
     node_receivers
         .into_iter()
@@ -359,6 +366,32 @@ pub fn collect_leader_ids(nodes_map: &NodesMap) -> u64 {
     } else {
         assert!(nodes_map.contains_key(&leader_ids[0]));
         leader_ids[0]
+    }
+}
+
+pub fn wait_for_same_leader(nodes_map: &NodesMap) -> u64 {
+    loop {
+        let receiver = {
+            let (sender, receiver) = unbounded();
+            nodes_map.iter().for_each(|(_, (_, _, s, _))| {
+                s.unbounded_send(TestMessages::GetLeaderId {
+                    result: sender.clone(),
+                }).unwrap();
+            });
+            receiver
+        };
+
+        let leader_ids = current_thread::block_on_all(receiver.collect()).unwrap();
+
+        assert_eq!(nodes_map.len(), leader_ids.len());
+        if nodes_map.len() > 1 {
+            // If all are the same, return it
+            if leader_ids.iter().eq(leader_ids.iter()) && leader_ids[0] != 0 {
+                return leader_ids[0];
+            }
+        } else {
+            return leader_ids[0];
+        }
     }
 }
 
@@ -479,11 +512,9 @@ pub fn wait_for_cluster_majority_down(nodes_map: &NodesMap) {
     let receiver = {
         let (sender, receiver) = unbounded();
         nodes_map.values().for_each(|v| {
-            v.2
-                .unbounded_send(TestMessages::WaitForMajorityDown {
-                    result: sender.clone(),
-                })
-                .unwrap()
+            v.2.unbounded_send(TestMessages::WaitForMajorityDown {
+                result: sender.clone(),
+            }).unwrap()
         });
         receiver
     };
