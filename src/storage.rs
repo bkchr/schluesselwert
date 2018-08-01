@@ -125,6 +125,11 @@ impl Storage {
         Ok(())
     }
 
+    /// Returns the `ConfState`.
+    pub fn get_conf_state(&self) -> &ConfState {
+        &self.conf_state
+    }
+
     /// Set the value for a key.
     /// idx - The index of the `Entry` that requested this operation.
     pub fn set<T: Into<Vec<u8>>>(&mut self, key: T, val: &[u8], idx: u64) -> Result<()> {
@@ -289,9 +294,10 @@ impl RStorage for Storage {
 
         let mut snapshot = Snapshot::new();
         snapshot.mut_metadata().set_index(self.last_applied_index);
-        snapshot
-            .mut_metadata()
-            .set_term(self.term(self.last_applied_index)?);
+        snapshot.mut_metadata().set_term(
+            self.term(self.last_applied_index)
+                .map_err(|_| StorageError::SnapshotTemporarilyUnavailable)?,
+        );
         snapshot
             .mut_metadata()
             .set_conf_state(self.conf_state.clone());

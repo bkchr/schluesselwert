@@ -29,6 +29,7 @@ pub enum Protocol {
     ClusterMajorityDown {
         id: u64,
     },
+    Ping,
 }
 
 /// The requests to the store.

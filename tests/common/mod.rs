@@ -22,7 +22,7 @@ use futures::{
     Future, Poll, Stream,
 };
 
-use tokio::{executor::current_thread, runtime::Runtime};
+use tokio::{executor::current_thread, runtime::Runtime, timer::Interval};
 
 use tempdir::TempDir;
 
@@ -58,6 +58,7 @@ pub struct NodeExecutor {
     msg_recv: UnboundedReceiver<TestMessages>,
     node_handle_recv: oneshot::Receiver<()>,
     pending_requests: Vec<RefCell<TestMessages>>,
+    timer: Interval,
 }
 
 impl NodeExecutor {
@@ -70,6 +71,7 @@ impl NodeExecutor {
                 msg_recv,
                 node_handle_recv,
                 pending_requests: Vec::new(),
+                timer: Interval::new(Instant::now(), Duration::from_millis(200)),
             },
             sender,
             node_handle,
@@ -77,6 +79,9 @@ impl NodeExecutor {
     }
 
     fn process_pending_requests(&mut self) {
+        if self.timer.poll().map(|r| r.is_not_ready()).unwrap_or(true) {
+            return;
+        }
         let node = self.node.borrow_mut();
         self.pending_requests.retain(|r| {
             let mut r = r.borrow_mut();
@@ -182,7 +187,7 @@ fn start_node(
         let _ = sender.send((node_handle, node_sender, dir));
 
         let _ = runtime.block_on(executor);
-        runtime.shutdown_now();
+        runtime.shutdown_now().wait().unwrap();
     });
 
     receiver
@@ -441,15 +446,17 @@ pub fn wait_for_snapshot_applied(nodes_map: &NodesMap, node_id: u64) {
 }
 
 pub fn wait_for_cluster_majority_down(nodes_map: &NodesMap) {
-    let (sender, receiver) = unbounded();
-    nodes_map
-        .get(&collect_leader_ids(nodes_map))
-        .unwrap()
-        .2
-        .unbounded_send(TestMessages::WaitForMajorityDown { result: sender })
-        .unwrap();
+    let receiver = {
+        let (sender, receiver) = unbounded();
+        nodes_map.values().for_each(|v| {
+            v.2.unbounded_send(TestMessages::WaitForMajorityDown {
+                result: sender.clone(),
+            }).unwrap()
+        });
+        receiver
+    };
 
-    current_thread::block_on_all(receiver.into_future()).unwrap();
+    current_thread::block_on_all(receiver.collect()).unwrap();
 }
 
 pub fn listen_ports_to_socket_addrs(listen_ports: Vec<u16>) -> Vec<SocketAddr> {

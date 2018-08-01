@@ -3,83 +3,25 @@ use protocol::Protocol;
 
 use tokio::net::TcpStream;
 
-use futures::{Async::Ready, AsyncSink, Poll, Sink, StartSend, Stream};
+use futures::{Async::Ready, Poll, Sink, StartSend, Stream};
 
-use bytes::{Buf, BytesMut, IntoBuf};
-
-use std::{
-    io::{Read, Write},
-    mem,
-    net::Shutdown,
-};
+use std::net::Shutdown;
 
 use bincode;
 
-use byteorder::{BigEndian, ByteOrder};
-
 use rand::{self, Rng};
 
+use length_delimited::Framed;
+
 pub struct Connection {
-    stream: TcpStream,
-    buf: Vec<u8>,
-    next_packet_buf: BytesMut,
-    next_packet_len: Option<u32>,
+    stream: Framed<TcpStream>,
 }
 
 impl From<TcpStream> for Connection {
     fn from(stream: TcpStream) -> Connection {
         Connection {
-            stream,
-            buf: vec![0; 1536],
-            next_packet_len: None,
-            next_packet_buf: BytesMut::new(),
+            stream: Framed::new(stream),
         }
-    }
-}
-
-impl Connection {
-    fn read_next_packet(&mut self) -> Poll<Option<BytesMut>, Error> {
-        // TODO: optimize
-        loop {
-            if let Some(next_packet_len) = self.next_packet_len {
-                if self.next_packet_buf.len() >= next_packet_len as usize {
-                    self.next_packet_len = None;
-                    let res = self.next_packet_buf.split_to(next_packet_len as usize);
-                    return Ok(Ready(Some(res)));
-                }
-
-                let len = try_nb!(self.stream.read(&mut self.buf));
-
-                // other side closed the connection
-                if len == 0 {
-                    return Ok(Ready(None));
-                }
-
-                self.next_packet_buf.extend_from_slice(&self.buf[..len]);
-            } else {
-                if self.next_packet_buf.len() >= mem::size_of::<u32>() {
-                    let len = self.next_packet_buf.split_to(mem::size_of::<u32>());
-                    self.next_packet_len = Some(len.into_buf().get_u32_be());
-                } else {
-                    let len = try_nb!(self.stream.read(&mut self.buf));
-
-                    // other side closed the connection
-                    if len == 0 {
-                        return Ok(Ready(None));
-                    }
-
-                    self.next_packet_buf.extend_from_slice(&self.buf[..len]);
-                }
-            }
-        }
-    }
-
-    /// Returns if the underlying TCPStream is writeable.
-    pub fn poll_writeable(&mut self) -> bool {
-        self.stream
-            .poll_write_ready()
-            .map(|r| r.is_ready())
-            .unwrap_or(false)
     }
 }
 
@@ -88,12 +30,10 @@ impl Stream for Connection {
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        let packet = match try_ready!(self.read_next_packet()) {
-            Some(packet) => packet,
-            None => return Ok(Ready(None)),
-        };
-
-        Ok(Ready(Some(bincode::deserialize(&packet)?)))
+        match try_ready!(self.stream.poll()) {
+            Some(packet) => Ok(Ready(Some(bincode::deserialize(&packet)?))),
+            None => Ok(Ready(None)),
+        }
     }
 }
 
@@ -102,26 +42,20 @@ impl Sink for Connection {
     type SinkError = Error;
 
     fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
-        // TODO: handle to much data!
-        let buf = bincode::serialize(&item)?;
-
-        let mut len: [u8; 4] = [0; 4];
-        BigEndian::write_u32(&mut len, buf.len() as u32);
-        self.stream.write(&len)?;
-        self.stream.write(&buf)?;
-
-        Ok(AsyncSink::Ready)
+        self.stream
+            .start_send(bincode::serialize(&item)?.into())
+            .map(move |r| r.map(|_| item))
+            .map_err(|e| e.into())
     }
 
     fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
-        self.stream.flush()?;
-        Ok(Ready(()))
+        self.stream.poll_complete().map_err(|e| e.into())
     }
 }
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        let _ = self.stream.shutdown(Shutdown::Both);
+        let _ = self.stream.get_mut().shutdown(Shutdown::Both);
     }
 }
 
@@ -196,6 +130,12 @@ mod tests {
         let (res, con) = current_thread::block_on_all(c.into_future().map_err(|e| e.0)).unwrap();
         assert_eq!(None, res);
 
+        let con = current_thread::block_on_all(con.send(Protocol::Request {
+            id: 0,
+            data: vec![1, 2],
+        })).unwrap();
+
+        // Second write is an error when the connection was closed
         let res = current_thread::block_on_all(con.send(Protocol::Request {
             id: 0,
             data: vec![1, 2],

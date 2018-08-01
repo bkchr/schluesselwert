@@ -15,7 +15,7 @@ use futures::{
         oneshot,
     },
     Async::{NotReady, Ready},
-    Future, Poll, Sink, Stream,
+    AsyncSink, Future, Poll, Sink, Stream,
 };
 
 use bincode;
@@ -349,10 +349,6 @@ impl ClusterConnection {
     /// Poll the send requests and forward them to the cluster!
     fn poll_send_reqs(&mut self) -> Poll<Option<()>, Error> {
         loop {
-            if !self.connection.as_mut().unwrap().poll_writeable() {
-                return Ok(NotReady);
-            }
-
             match self.recv_send_req.poll() {
                 Ok(Ready(Some(req))) => {
                     let id = self.next_request_id;
@@ -374,12 +370,21 @@ impl ClusterConnection {
 
                     self.active_requests.insert(id, (req.clone(), sender));
 
-                    if let Err(e) = self.connection.as_mut().unwrap().start_send(req) {
-                        // TODO: maybe do not reconnect directly
-                        eprintln!("poll_send_reqs error: {:?}", e);
-                        // reconnect to the cluster
-                        self.connect_to_cluster(None);
-                        return Ok(Ready(Some(())));
+                    let res = self.connection.as_mut().unwrap().start_send(req);
+                    let _ = self.connection.as_mut().unwrap().poll_complete();
+
+                    match res {
+                        Ok(AsyncSink::NotReady(_)) => {
+                            eprintln!("LOST");
+                        }
+                        Err(e) => {
+                            // TODO: maybe do not reconnect directly
+                            eprintln!("poll_send_reqs error: {:?}", e);
+                            // reconnect to the cluster
+                            self.connect_to_cluster(None);
+                            return Ok(Ready(Some(())));
+                        }
+                        Ok(AsyncSink::Ready) => {}
                     }
                 }
                 Err(_) | Ok(Ready(None)) => return Ok(Ready(None)),

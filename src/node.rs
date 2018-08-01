@@ -346,6 +346,13 @@ impl Node {
                                 id: id.get_client_request_id(),
                             });
                         }
+                    } else if self.node.raft.leader_id == raft::INVALID_ID
+                        && !self.is_cluster_majority_running()
+                    {
+                        // If no leader is elected and the majority is down, tell the client that
+                        let _ = response.unbounded_send(Protocol::ClusterMajorityDown {
+                            id: id.get_client_request_id(),
+                        });
                     } else {
                         self.send_not_leader(response);
                     }
@@ -370,6 +377,13 @@ impl Node {
                                 id: id.get_client_request_id(),
                             });
                         }
+                    } else if self.node.raft.leader_id == raft::INVALID_ID
+                        && !self.is_cluster_majority_running()
+                    {
+                        // If no leader is elected and the majority is down, tell the client that
+                        let _ = response.unbounded_send(Protocol::ClusterMajorityDown {
+                            id: id.get_client_request_id(),
+                        });
                     } else {
                         self.send_not_leader(response);
                     }
@@ -380,9 +394,10 @@ impl Node {
 
     /// Checks if the majority of the cluster is still running.
     pub fn is_cluster_majority_running(&self) -> bool {
-        let progress = self.node.status().progress;
-        // number of active connections + 1 (this node)
-        self.peer_connections.get_active_connections() + 1 >= raft::quorum(progress.len())
+        let num_nodes = self.node.get_store().get_conf_state().nodes.len();
+        let active_nodes = self.peer_connections.get_active_connections() + 1;
+        let required_quorum = raft::quorum(num_nodes);
+        active_nodes >= required_quorum
     }
 
     /// Returns the id of the leader.

@@ -15,7 +15,6 @@ extern crate serde_derive;
 extern crate futures;
 extern crate bytes;
 extern crate serde;
-#[macro_use]
 extern crate tokio_io;
 
 #[macro_use]
@@ -23,6 +22,7 @@ mod error;
 mod client;
 mod connection;
 mod incoming_connections;
+mod length_delimited;
 mod node;
 mod peer_connections;
 mod protocol;
