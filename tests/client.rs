@@ -196,7 +196,7 @@ fn remove_leader_and_re_add_node() {
 
     let leader_id = collect_leader_ids(&nodes_map);
     current_thread::block_on_all(client.remove_node_from_cluster(leader_id)).unwrap();
-    let removed_node_path = nodes_map.take_dir_and_remove(leader_id);
+    let removed_node_path = nodes_map.take_dir_and_shutdown(leader_id);
 
     collect_leader_ids(&nodes_map);
 
@@ -248,7 +248,7 @@ fn kill_nodes_until_majority_down_impl(
     check_data_with_get(test_data.clone(), &mut client, None, Some(500));
 
     // Remove node with id 1
-    let node_one_path = nodes_map.take_dir_and_remove(1);
+    let node_one_path = nodes_map.take_dir_and_shutdown(1);
 
     current_thread::block_on_all(future::join_all(
         test_data
@@ -261,8 +261,8 @@ fn kill_nodes_until_majority_down_impl(
     // Check that all data was set
     check_data_with_get(test_data.clone(), &mut client, Some(500), Some(500));
 
-    // Remove node with id 2
-    nodes_map.remove(&2);
+    // Shutdown node with id 2
+    nodes_map.shutdown_node(2);
 
     // wait until the majority is down
     wait_for_cluster_majority_down(&nodes_map);
@@ -282,14 +282,12 @@ fn kill_nodes_until_majority_down_impl(
     (nodes_map, test_data, client, node_one_path)
 }
 
-// #[test]
-// Flaky
+#[test]
 fn kill_nodes_until_majority_down() {
     kill_nodes_until_majority_down_impl(20080);
 }
 
-// #[test]
-// Flaky
+#[test]
 fn kill_nodes_until_majority_down_and_bring_one_node_back() {
     let base_listen_port = 20090;
     let (mut nodes_map, test_data, mut client, node_one_path) =

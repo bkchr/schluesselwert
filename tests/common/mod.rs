@@ -56,9 +56,10 @@ pub enum TestMessages {
 pub struct NodeExecutor {
     node: RefCell<Node>,
     msg_recv: UnboundedReceiver<TestMessages>,
-    node_handle_recv: oneshot::Receiver<()>,
+    node_handle_recv: oneshot::Receiver<oneshot::Sender<()>>,
     pending_requests: Vec<RefCell<TestMessages>>,
     timer: Interval,
+    shutdown_finished: Option<oneshot::Sender<()>>,
 }
 
 impl NodeExecutor {
@@ -72,6 +73,7 @@ impl NodeExecutor {
                 node_handle_recv,
                 pending_requests: Vec::new(),
                 timer: Interval::new(Instant::now(), Duration::from_millis(200)),
+                shutdown_finished: None,
             },
             sender,
             node_handle,
@@ -139,11 +141,26 @@ impl Future for NodeExecutor {
     type Error = ();
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        if self.node_handle_recv.poll().is_err() {
-            return Ok(Ready(()));
-        }
+        match self.node_handle_recv.poll() {
+            Err(_) => return Ok(Ready(())),
+            Ok(Ready(sender)) => {
+                self.node.borrow_mut().shutdown();
+                self.shutdown_finished = Some(sender);
+            }
+            _ => {}
+        };
 
-        self.node.borrow_mut().poll().unwrap();
+        match self.node.borrow_mut().poll().unwrap() {
+            Ready(()) => {
+                if let Some(sender) = self.shutdown_finished.take() {
+                    let _ = sender.send(());
+                }
+
+                return Ok(Ready(()));
+            }
+            _ => {}
+        };
+
         loop {
             match self.msg_recv.poll().unwrap() {
                 Ready(Some(req)) => {
@@ -160,13 +177,19 @@ impl Future for NodeExecutor {
 
 /// When dropped, a the associated Node will stop
 pub struct NodeHandle {
-    _sender: oneshot::Sender<()>,
+    sender: oneshot::Sender<oneshot::Sender<()>>,
 }
 
 impl NodeHandle {
-    fn new() -> (NodeHandle, oneshot::Receiver<()>) {
+    fn new() -> (NodeHandle, oneshot::Receiver<oneshot::Sender<()>>) {
         let (sender, recv) = oneshot::channel();
-        (NodeHandle { _sender: sender }, recv)
+        (NodeHandle { sender }, recv)
+    }
+
+    fn shutdown(self) -> oneshot::Receiver<()> {
+        let (sender, recv) = oneshot::channel();
+        let _ = self.sender.send(sender);
+        recv
     }
 }
 
@@ -214,8 +237,14 @@ impl NodesMap {
         self.0.get_mut(&id).unwrap().3.take()
     }
 
-    pub fn take_dir_and_remove(&mut self, id: u64) -> Option<TempDir> {
-        self.0.remove(&id).unwrap().3
+    pub fn take_dir_and_shutdown(&mut self, id: u64) -> Option<TempDir> {
+        let res = self.0.remove(&id).unwrap();
+        let _ = current_thread::block_on_all(res.1.shutdown());
+        res.3
+    }
+
+    pub fn shutdown_node(&mut self, id: u64) {
+        let _ = current_thread::block_on_all(self.0.remove(&id).unwrap().1.shutdown());
     }
 
     pub fn restart_node(&mut self, id: u64, db_path: Option<TempDir>, base_listen_port: u16) {
@@ -283,7 +312,8 @@ pub fn setup_nodes_with_cluster_nodes(
                 n.clone(),
                 start_node(n, lp, cluster_nodes.clone(), db),
             )
-        }).collect::<Vec<_>>();
+        })
+        .collect::<Vec<_>>();
 
     node_receivers
         .into_iter()
@@ -449,9 +479,11 @@ pub fn wait_for_cluster_majority_down(nodes_map: &NodesMap) {
     let receiver = {
         let (sender, receiver) = unbounded();
         nodes_map.values().for_each(|v| {
-            v.2.unbounded_send(TestMessages::WaitForMajorityDown {
-                result: sender.clone(),
-            }).unwrap()
+            v.2
+                .unbounded_send(TestMessages::WaitForMajorityDown {
+                    result: sender.clone(),
+                })
+                .unwrap()
         });
         receiver
     };

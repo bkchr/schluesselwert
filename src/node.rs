@@ -85,9 +85,10 @@ pub struct Node {
     timer: Interval,
     recv_msgs: UnboundedReceiver<NodeMessage>,
     request_response: HashMap<RequestIdentifier, UnboundedSender<Protocol>>,
-    peer_connections: PeerConnections,
+    peer_connections: Option<PeerConnections>,
     incoming_connections: IncomingConnections,
     applied_snapshot: bool,
+    shutting_down: bool,
 }
 
 impl Node {
@@ -116,25 +117,28 @@ impl Node {
 
         let node = RawNode::new(&config, storage, vec![])?;
         let timer = Interval::new(Instant::now(), Duration::from_millis(100));
-        let peer_connections = PeerConnections::new(
+        let (peer_connections, send_peer_con_closed) = PeerConnections::new(
             peers
                 .into_iter()
                 .filter(|p| p.0.id != id)
                 .map(|p| p.into())
                 .collect(),
+            id,
         );
         let (sender, recv_msgs) = unbounded();
 
-        let incoming_connections = IncomingConnections::new(listen_port, sender)?;
+        let incoming_connections =
+            IncomingConnections::new(listen_port, sender, send_peer_con_closed)?;
 
         Ok(Node {
             node,
             timer,
             recv_msgs,
             request_response: HashMap::new(),
-            peer_connections,
+            peer_connections: Some(peer_connections),
             incoming_connections,
             applied_snapshot: false,
+            shutting_down: false,
         })
     }
 
@@ -146,6 +150,7 @@ impl Node {
         }
     }
 
+    /// Send all messages of the given `Ready` instance.
     fn send_msgs(&mut self, ready: &mut Ready) {
         let msgs = ready.messages.drain(..);
         for msg in msgs {
@@ -155,14 +160,25 @@ impl Node {
                 _ => false,
             };
 
-            if self.peer_connections.send_msg(msg).is_err() {
+            if !self
+                .peer_connections
+                .as_mut()
+                .unwrap()
+                .send_msg(msg)
+                .unwrap_or(false)
+            {
                 self.node.report_unreachable(peer);
+
+                if is_snapshot {
+                    self.node.report_snapshot(peer, SnapshotStatus::Failure);
+                }
             } else if is_snapshot {
                 self.node.report_snapshot(peer, SnapshotStatus::Finish);
             }
         }
     }
 
+    /// Get the `Ready` and process it.
     fn process_ready(&mut self) {
         let mut ready = self.node.ready();
 
@@ -250,7 +266,7 @@ impl Node {
 
         match conf_change.get_change_type() {
             ConfChangeType::AddNode => {
-                self.peer_connections.add_peer(
+                self.peer_connections.as_mut().unwrap().add_peer(
                     Peer::new(
                         conf_change.get_node_id(),
                         context
@@ -260,7 +276,10 @@ impl Node {
                 );
             }
             ConfChangeType::RemoveNode => {
-                self.peer_connections.remove_peer(conf_change.get_node_id());
+                self.peer_connections
+                    .as_mut()
+                    .unwrap()
+                    .remove_peer(conf_change.get_node_id());
             }
             ConfChangeType::AddLearnerNode => unimplemented!(),
         };
@@ -319,6 +338,8 @@ impl Node {
         let _ = response.unbounded_send(Protocol::NotLeader {
             leader_addr: self
                 .peer_connections
+                .as_ref()
+                .unwrap()
                 .get_addr_of_peer(self.node.raft.leader_id),
         });
     }
@@ -394,10 +415,18 @@ impl Node {
 
     /// Checks if the majority of the cluster is still running.
     pub fn is_cluster_majority_running(&self) -> bool {
-        let num_nodes = self.node.get_store().get_conf_state().nodes.len();
-        let active_nodes = self.peer_connections.get_active_connections() + 1;
-        let required_quorum = raft::quorum(num_nodes);
-        active_nodes >= required_quorum
+        if self.shutting_down {
+            true
+        } else {
+            let num_nodes = self.node.get_store().get_conf_state().nodes.len();
+            let active_nodes = self
+                .peer_connections
+                .as_ref()
+                .unwrap()
+                .get_active_connections() + 1;
+            let required_quorum = raft::quorum(num_nodes);
+            active_nodes >= required_quorum
+        }
     }
 
     /// Returns the id of the leader.
@@ -424,6 +453,13 @@ impl Node {
     pub fn get_last_applied_index(&self) -> u64 {
         self.node.get_store().get_last_applied_index()
     }
+
+    /// Shutdown this instance.
+    pub fn shutdown(&mut self) {
+        self.shutting_down = true;
+        self.incoming_connections.shutdown();
+        self.peer_connections.take();
+    }
 }
 
 impl Future for Node {
@@ -433,17 +469,29 @@ impl Future for Node {
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         loop {
             match self.incoming_connections.poll() {
-                Ok(Async::Ready(())) => panic!("IncomingConnections ended!"),
+                Ok(Async::Ready(())) => {
+                    if self.shutting_down {
+                        return Ok(Async::Ready(()));
+                    } else {
+                        panic!("IncomingConnections ended!")
+                    }
+                }
                 Err(e) => panic!("IncomingConnections ended with: {:?}", e),
-                _ => {}
+                Ok(Async::NotReady) => {
+                    if self.shutting_down {
+                        return Ok(Async::NotReady);
+                    }
+                }
             };
 
-            let _ = self.peer_connections.poll();
-            let _ = self.poll_recv_msgs();
+            if !self.shutting_down {
+                let _ = self.peer_connections.as_mut().unwrap().poll();
+                let _ = self.poll_recv_msgs();
 
-            try_ready!(self.timer.poll());
+                try_ready!(self.timer.poll());
 
-            self.tick();
+                self.tick();
+            }
         }
     }
 }

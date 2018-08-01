@@ -12,6 +12,7 @@ use raft::{eraftpb, Peer};
 
 use futures::{
     stream::{futures_unordered, FuturesUnordered},
+    sync::mpsc::{unbounded, UnboundedReceiver, UnboundedSender},
     Async::{NotReady, Ready},
     Future, Poll, Sink, Stream,
 };
@@ -84,28 +85,41 @@ pub struct PeerConnections {
     connections: HashMap<u64, Connection>,
     building_connections: FuturesUnordered<BuildingConnection>,
     peers: HashMap<u64, Peer>,
+    /// The peer id of the local node.
+    peer_id: u64,
+    /// Receive that a peer closed its connection to our node.
+    recv_incoming_peer_closed: UnboundedReceiver<u64>,
 }
 
 impl PeerConnections {
-    pub fn new(peers: Vec<Peer>) -> PeerConnections {
-        PeerConnections {
-            connections: HashMap::default(),
-            building_connections: futures_unordered(
-                peers.iter().map(|p| BuildingConnection::from(p)),
-            ),
-            peers: peers.into_iter().map(|p| (p.id, p)).collect(),
-        }
+    pub fn new(peers: Vec<Peer>, peer_id: u64) -> (PeerConnections, UnboundedSender<u64>) {
+        let (sender, recv_incoming_peer_closed) = unbounded();
+        (
+            PeerConnections {
+                connections: HashMap::default(),
+                building_connections: futures_unordered(
+                    peers.iter().map(|p| BuildingConnection::from(p)),
+                ),
+                peers: peers.into_iter().map(|p| (p.id, p)).collect(),
+                peer_id,
+                recv_incoming_peer_closed,
+            },
+            sender,
+        )
     }
 
-    pub fn send_msg(&mut self, msg: eraftpb::Message) -> Result<()> {
+    pub fn send_msg(&mut self, msg: eraftpb::Message) -> Result<bool> {
         let peer = msg.to;
         let res = {
             let mut con = self.connections.get_mut(&peer);
 
+            //TODO: Buffer packet if returns `NotReady(_)`
             if let Some(con) = con {
-                con.start_send(Protocol::Raft {
+                let res = con.start_send(Protocol::Raft {
                     msg: msg.write_to_bytes()?,
-                }).and_then(|_| con.poll_complete())
+                });
+                let _ = con.poll_complete();
+                res
             } else {
                 bail!("Connection to peer {}, does not exist!", peer);
             }
@@ -117,18 +131,20 @@ impl PeerConnections {
             self.connections.remove(&peer);
         }
 
-        res.map(|_| ())
+        res.map(|r| r.is_ready())
     }
 
     fn poll_building_connections(&mut self) -> Poll<(), ()> {
         loop {
-            let (peer, connection) = match try_ready!(self.building_connections.poll()) {
+            let (peer, mut connection) = match try_ready!(self.building_connections.poll()) {
                 Some(res) => res,
                 None => return Ok(NotReady),
             };
 
             // If the peer was removed, just drop the connection
             if self.peers.contains_key(&peer) {
+                let _ = connection.start_send(Protocol::PeerHello { id: self.peer_id });
+                let _ = connection.poll_complete();
                 self.connections.insert(peer, connection);
             }
         }
@@ -177,23 +193,15 @@ impl Future for PeerConnections {
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let _ = self.poll_building_connections();
 
-        // TODO: Could be implemented more memory friendly!
-        let mut rebuild_connections = None;
-        self.connections.retain(|peer, con| {
-            if con.poll().is_err() {
-                rebuild_connections.get_or_insert_with(Vec::new).push(*peer);
-                false
-            } else {
-                true
+        loop {
+            match self.recv_incoming_peer_closed.poll() {
+                Ok(Ready(Some(id))) => {
+                    self.create_building_connection(id);
+                    self.connections.remove(&id);
+                }
+                Err(_) | Ok(Ready(None)) => return Ok(Ready(())),
+                Ok(NotReady) => return Ok(NotReady),
             }
-        });
-
-        if let Some(rebuild) = rebuild_connections {
-            rebuild.into_iter().for_each(|peer| {
-                self.create_building_connection(peer);
-            });
         }
-
-        Ok(NotReady)
     }
 }

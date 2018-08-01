@@ -29,7 +29,10 @@ pub enum Protocol {
     ClusterMajorityDown {
         id: u64,
     },
-    Ping,
+    /// Send by a peer as first packet.
+    PeerHello {
+        id: u64,
+    }
 }
 
 /// The requests to the store.

@@ -299,7 +299,7 @@ impl ClusterConnection {
     /// Handle an incoming message.
     /// Returns false when the connection will be recreated.
     fn handle_msg(&mut self, msg: Protocol) -> bool {
-        match msg {
+        let res = match msg {
             Protocol::NotLeader { leader_addr } => {
                 self.connect_to_cluster(leader_addr);
                 false
@@ -343,7 +343,10 @@ impl ClusterConnection {
                 true
             }
             _ => true,
-        }
+        };
+
+        // println!("ACTIVE: {}", self.active_requests.len());
+        res
     }
 
     /// Poll the send requests and forward them to the cluster!
@@ -435,7 +438,9 @@ mod tests {
         fn create_and_run(listen_port: u16, callback: F) {
             thread::spawn(move || {
                 let (sender, recv_msg) = unbounded();
-                let incoming_connections = IncomingConnections::new(listen_port, sender).unwrap();
+                let (sender2, _recv_msg2) = unbounded();
+                let incoming_connections =
+                    IncomingConnections::new(listen_port, sender, sender2).unwrap();
                 let node = FakeNode {
                     recv_msg,
                     incoming_connections,
@@ -480,7 +485,8 @@ mod tests {
                     res: RequestResult::Get {
                         value: Some(vec![1]),
                     },
-                }).unwrap(),
+                })
+                .unwrap(),
             _ => panic!("unexpected message!"),
         });
 
@@ -506,7 +512,8 @@ mod tests {
             NodeMessage::Propose { response, .. } => response
                 .unbounded_send(Protocol::NotLeader {
                     leader_addr: Some(fake_node_leader_addr),
-                }).unwrap(),
+                })
+                .unwrap(),
             _ => panic!("unexpected message!"),
         });
 
@@ -518,7 +525,8 @@ mod tests {
                     res: RequestResult::Get {
                         value: Some(vec![1]),
                     },
-                }).unwrap(),
+                })
+                .unwrap(),
             _ => panic!("unexpected message!"),
         });
 
@@ -541,7 +549,8 @@ mod tests {
                 .unbounded_send(Protocol::RequestResult {
                     id: id.get_client_request_id(),
                     res: RequestResult::Get { value: None },
-                }).unwrap(),
+                })
+                .unwrap(),
             _ => panic!("unexpected message!"),
         });
 
@@ -560,7 +569,8 @@ mod tests {
                 .unbounded_send(Protocol::RequestResult {
                     id: id.get_client_request_id(),
                     res: RequestResult::Set { successful: true },
-                }).unwrap(),
+                })
+                .unwrap(),
             _ => panic!("unexpected message!"),
         });
 
@@ -579,7 +589,8 @@ mod tests {
                 .unbounded_send(Protocol::RequestResult {
                     id: id.get_client_request_id(),
                     res: RequestResult::Set { successful: false },
-                }).unwrap(),
+                })
+                .unwrap(),
             _ => panic!("unexpected message!"),
         });
 
@@ -601,7 +612,8 @@ mod tests {
                 .unbounded_send(Protocol::RequestResult {
                     id: id.get_client_request_id(),
                     res: RequestResult::Delete { successful: true },
-                }).unwrap(),
+                })
+                .unwrap(),
             _ => panic!("unexpected message!"),
         });
 
@@ -620,7 +632,8 @@ mod tests {
                 .unbounded_send(Protocol::RequestResult {
                     id: id.get_client_request_id(),
                     res: RequestResult::Delete { successful: false },
-                }).unwrap(),
+                })
+                .unwrap(),
             _ => panic!("unexpected message!"),
         });
 
@@ -644,7 +657,8 @@ mod tests {
                     res: RequestResult::Scan {
                         keys: Some(vec![vec![1]]),
                     },
-                }).unwrap(),
+                })
+                .unwrap(),
             _ => panic!("unexpected message!"),
         });
 
@@ -664,7 +678,8 @@ mod tests {
                 .unbounded_send(Protocol::RequestResult {
                     id: id.get_client_request_id(),
                     res: RequestResult::Scan { keys: None },
-                }).unwrap(),
+                })
+                .unwrap(),
             _ => panic!("unexpected message!"),
         });
 
