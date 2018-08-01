@@ -20,3 +20,8 @@ rand = "0.5.4"
 
 [dev-dependencies]
 tempdir = "0.3.7"
+criterion = "0.2"
+
+[[bench]]
+name = "bench_kv"
+harness = false

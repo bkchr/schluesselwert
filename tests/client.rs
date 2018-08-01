@@ -6,11 +6,7 @@ extern crate tokio;
 
 mod common;
 
-use common::{
-    collect_leader_ids, compare_node_snapshots, create_node, create_nodes, generate_random_data,
-    setup_nodes, setup_nodes_with_cluster_nodes, wait_for_cluster_majority_down,
-    wait_for_snapshot_applied, NodesMap,
-};
+use common::*;
 
 use schluesselwert::{Client, Error};
 
@@ -21,13 +17,6 @@ use tokio::executor::current_thread;
 use futures::{future, Future};
 
 use tempdir::TempDir;
-
-fn listen_ports_to_socket_addrs(listen_ports: Vec<u16>) -> Vec<SocketAddr> {
-    listen_ports
-        .into_iter()
-        .map(|p| ([127, 0, 0, 1], p).into())
-        .collect()
-}
 
 fn check_data_with_get(
     test_data: HashMap<Vec<u8>, Vec<u8>>,

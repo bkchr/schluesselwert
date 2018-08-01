@@ -6,6 +6,7 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     mem,
+    net::SocketAddr,
     ops::{Deref, DerefMut},
     sync::mpsc::{channel, Receiver},
     thread,
@@ -364,6 +365,28 @@ pub fn generate_random_data(count: usize) -> HashMap<Vec<u8>, Vec<u8>> {
     data
 }
 
+pub fn generate_random_data_with_size(max_size: usize) -> HashMap<Vec<u8>, Vec<u8>> {
+    let mut rng = XorShiftRng::from_seed(TEST_SEED);
+    let mut data = HashMap::new();
+    let mut size = 0;
+
+    loop {
+        let key_len = rng.gen_range(5, 15);
+        let key = rng.sample_iter(&Standard).take(key_len).collect();
+
+        let value_len = rng.gen_range(25, 50);
+        let value = rng.sample_iter(&Standard).take(value_len).collect();
+
+        data.insert(key, value);
+
+        size += key_len + value_len;
+
+        if size >= max_size {
+            return data;
+        }
+    }
+}
+
 /// Create a snapshot on each node and compare all of them.
 pub fn compare_node_snapshots(nodes_map: &NodesMap) {
     let leader_id = collect_leader_ids(nodes_map);
@@ -427,4 +450,11 @@ pub fn wait_for_cluster_majority_down(nodes_map: &NodesMap) {
         .unwrap();
 
     current_thread::block_on_all(receiver.into_future()).unwrap();
+}
+
+pub fn listen_ports_to_socket_addrs(listen_ports: Vec<u16>) -> Vec<SocketAddr> {
+    listen_ports
+        .into_iter()
+        .map(|p| ([127, 0, 0, 1], p).into())
+        .collect()
 }

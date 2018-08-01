@@ -28,7 +28,7 @@ pub enum Protocol {
     /// The majority of the cluster is down.
     ClusterMajorityDown {
         id: u64,
-    }
+    },
 }
 
 /// The requests to the store.
@@ -57,12 +57,7 @@ pub enum RequestResult {
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub enum RequestChangeConf {
     /// Add a node to the cluster.
-    AddNode {
-        node_id: u64,
-        node_addr: SocketAddr,
-    },
+    AddNode { node_id: u64, node_addr: SocketAddr },
     /// Remove a node from the cluster.
-    RemoveNode {
-        node_id: u64,
-    }
+    RemoveNode { node_id: u64 },
 }
