@@ -590,19 +590,6 @@ impl Builder {
     ///
     /// # Examples
     ///
-    /// ```
-    /// # use tokio_io::AsyncRead;
-    /// use tokio_io::codec::length_delimited::Builder;
-    ///
-    /// # fn bind_read<T: AsyncRead>(io: T) {
-    /// Builder::new()
-    ///     .length_field_offset(0)
-    ///     .length_field_length(2)
-    ///     .length_adjustment(0)
-    ///     .num_skip(0)
-    ///     .new_read(io);
-    /// # }
-    /// ```
     pub fn new() -> Builder {
         Builder {
             // Default max frame length of 8MB
@@ -633,16 +620,6 @@ impl Builder {
     ///
     /// # Examples
     ///
-    /// ```
-    /// # use tokio_io::AsyncRead;
-    /// use tokio_io::codec::length_delimited::Builder;
-    ///
-    /// # fn bind_read<T: AsyncRead>(io: T) {
-    /// Builder::new()
-    ///     .big_endian()
-    ///     .new_read(io);
-    /// # }
-    /// ```
     pub fn big_endian(&mut self) -> &mut Self {
         self.length_field_is_big_endian = true;
         self
@@ -655,17 +632,6 @@ impl Builder {
     /// This configuration option applies to both encoding and decoding.
     ///
     /// # Examples
-    ///
-    /// ```
-    /// # use tokio_io::AsyncRead;
-    /// use tokio_io::codec::length_delimited::Builder;
-    ///
-    /// # fn bind_read<T: AsyncRead>(io: T) {
-    /// Builder::new()
-    ///     .little_endian()
-    ///     .new_read(io);
-    /// # }
-    /// ```
     pub fn little_endian(&mut self) -> &mut Self {
         self.length_field_is_big_endian = false;
         self
@@ -679,16 +645,6 @@ impl Builder {
     ///
     /// # Examples
     ///
-    /// ```
-    /// # use tokio_io::AsyncRead;
-    /// use tokio_io::codec::length_delimited::Builder;
-    ///
-    /// # fn bind_read<T: AsyncRead>(io: T) {
-    /// Builder::new()
-    ///     .native_endian()
-    ///     .new_read(io);
-    /// # }
-    /// ```
     pub fn native_endian(&mut self) -> &mut Self {
         if cfg!(target_endian = "big") {
             self.big_endian()
@@ -712,16 +668,6 @@ impl Builder {
     ///
     /// # Examples
     ///
-    /// ```
-    /// # use tokio_io::AsyncRead;
-    /// use tokio_io::codec::length_delimited::Builder;
-    ///
-    /// # fn bind_read<T: AsyncRead>(io: T) {
-    /// Builder::new()
-    ///     .max_frame_length(8 * 1024)
-    ///     .new_read(io);
-    /// # }
-    /// ```
     pub fn max_frame_length(&mut self, val: usize) -> &mut Self {
         self.max_frame_len = val;
         self
@@ -735,16 +681,6 @@ impl Builder {
     ///
     /// # Examples
     ///
-    /// ```
-    /// # use tokio_io::AsyncRead;
-    /// use tokio_io::codec::length_delimited::Builder;
-    ///
-    /// # fn bind_read<T: AsyncRead>(io: T) {
-    /// Builder::new()
-    ///     .length_field_length(4)
-    ///     .new_read(io);
-    /// # }
-    /// ```
     pub fn length_field_length(&mut self, val: usize) -> &mut Self {
         assert!(val > 0 && val <= 8, "invalid length field length");
         self.length_field_len = val;
@@ -757,16 +693,6 @@ impl Builder {
     ///
     /// # Examples
     ///
-    /// ```
-    /// # use tokio_io::AsyncRead;
-    /// use tokio_io::codec::length_delimited::Builder;
-    ///
-    /// # fn bind_read<T: AsyncRead>(io: T) {
-    /// Builder::new()
-    ///     .length_field_offset(1)
-    ///     .new_read(io);
-    /// # }
-    /// ```
     pub fn length_field_offset(&mut self, val: usize) -> &mut Self {
         self.length_field_offset = val;
         self
@@ -777,16 +703,6 @@ impl Builder {
     ///
     /// # Examples
     ///
-    /// ```
-    /// # use tokio_io::AsyncRead;
-    /// use tokio_io::codec::length_delimited::Builder;
-    ///
-    /// # fn bind_read<T: AsyncRead>(io: T) {
-    /// Builder::new()
-    ///     .length_adjustment(-2)
-    ///     .new_read(io);
-    /// # }
-    /// ```
     pub fn length_adjustment(&mut self, val: isize) -> &mut Self {
         self.length_adjustment = val;
         self
@@ -800,16 +716,6 @@ impl Builder {
     ///
     /// # Examples
     ///
-    /// ```
-    /// # use tokio_io::AsyncRead;
-    /// use tokio_io::codec::length_delimited::Builder;
-    ///
-    /// # fn bind_read<T: AsyncRead>(io: T) {
-    /// Builder::new()
-    ///     .num_skip(4)
-    ///     .new_read(io);
-    /// # }
-    /// ```
     pub fn num_skip(&mut self, val: usize) -> &mut Self {
         self.num_skip = Some(val);
         self
@@ -819,19 +725,6 @@ impl Builder {
     ///
     /// # Examples
     ///
-    /// ```
-    /// # use tokio_io::AsyncRead;
-    /// use tokio_io::codec::length_delimited::Builder;
-    ///
-    /// # fn bind_read<T: AsyncRead>(io: T) {
-    /// Builder::new()
-    ///     .length_field_offset(0)
-    ///     .length_field_length(2)
-    ///     .length_adjustment(0)
-    ///     .num_skip(0)
-    ///     .new_read(io);
-    /// # }
-    /// ```
     pub fn new_read<T>(&self, upstream: T) -> FramedRead<T>
     where
         T: AsyncRead,
@@ -851,20 +744,6 @@ impl Builder {
     ///
     /// # Examples
     ///
-    /// ```
-    /// # extern crate tokio_io;
-    /// # extern crate bytes;
-    /// # use tokio_io::AsyncWrite;
-    /// # use tokio_io::codec::length_delimited;
-    /// # use bytes::BytesMut;
-    /// # fn write_frame<T: AsyncWrite>(io: T) {
-    /// # let _: length_delimited::FramedWrite<T, BytesMut> =
-    /// length_delimited::Builder::new()
-    ///     .length_field_length(2)
-    ///     .new_write(io);
-    /// # }
-    /// # pub fn main() {}
-    /// ```
     pub fn new_write<T, B>(&self, inner: T) -> FramedWrite<T, B>
     where
         T: AsyncWrite,
@@ -881,20 +760,6 @@ impl Builder {
     ///
     /// # Examples
     ///
-    /// ```
-    /// # extern crate tokio_io;
-    /// # extern crate bytes;
-    /// # use tokio_io::{AsyncRead, AsyncWrite};
-    /// # use tokio_io::codec::length_delimited;
-    /// # use bytes::BytesMut;
-    /// # fn write_frame<T: AsyncRead + AsyncWrite>(io: T) {
-    /// # let _: length_delimited::Framed<T, BytesMut> =
-    /// length_delimited::Builder::new()
-    ///     .length_field_length(2)
-    ///     .new_framed(io);
-    /// # }
-    /// # pub fn main() {}
-    /// ```
     pub fn new_framed<T, B>(&self, inner: T) -> Framed<T, B>
     where
         T: AsyncRead + AsyncWrite,
