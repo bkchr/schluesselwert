@@ -29,5 +29,6 @@ mod protocol;
 mod storage;
 
 pub use client::Client;
+pub use error::Error;
 pub use node::{Node, Peer};
 pub use raft::eraftpb::Snapshot;

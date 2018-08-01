@@ -379,9 +379,10 @@ impl Node {
     }
 
     /// Checks if the majority of the cluster is still running.
-    fn is_cluster_majority_running(&self) -> bool {
+    pub fn is_cluster_majority_running(&self) -> bool {
         let progress = self.node.status().progress;
-        self.peer_connections.get_active_connections() >= raft::quorum(progress.len())
+        // number of active connections + 1 (this node)
+        self.peer_connections.get_active_connections() + 1 >= raft::quorum(progress.len())
     }
 
     /// Returns the id of the leader.

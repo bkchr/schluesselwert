@@ -9,7 +9,7 @@ use std::{
     ops::{Deref, DerefMut},
     sync::mpsc::{channel, Receiver},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use futures::{
@@ -34,7 +34,7 @@ const TEST_SEED: [u8; 16] = [
 pub enum TestMessages {
     WaitForLeaderId {
         result: UnboundedSender<u64>,
-        old_leader: Option<u64>,
+        created: Instant,
     },
     GetLastAppliedIndex {
         result: UnboundedSender<u64>,
@@ -44,6 +44,9 @@ pub enum TestMessages {
         last_applied_index: u64,
     },
     WaitForSnapshotApply {
+        result: UnboundedSender<()>,
+    },
+    WaitForMajorityDown {
         result: UnboundedSender<()>,
     },
 }
@@ -79,10 +82,10 @@ impl NodeExecutor {
             match *r {
                 TestMessages::WaitForLeaderId {
                     ref mut result,
-                    old_leader,
+                    created,
                 } => {
                     let leader = node.get_leader_id();
-                    if leader != 0 && Some(leader) != old_leader {
+                    if created.elapsed().as_secs() > 2 && leader != 0 {
                         let _ = result.unbounded_send(leader);
                         false
                     } else {
@@ -111,6 +114,14 @@ impl NodeExecutor {
                 TestMessages::GetLastAppliedIndex { ref mut result } => {
                     let _ = result.unbounded_send(node.get_last_applied_index());
                     false
+                }
+                TestMessages::WaitForMajorityDown { ref mut result } => {
+                    if !node.is_cluster_majority_running() {
+                        let _ = result.unbounded_send(());
+                        false
+                    } else {
+                        true
+                    }
                 }
             }
         })
@@ -284,13 +295,13 @@ pub fn setup_nodes(nodes: Vec<Peer>, listen_ports: Vec<u16>) -> NodesMap {
 
 /// Collect the leader id from each nodes, checks that all selected the same leader and returns
 /// the leader id.
-pub fn collect_leader_ids(nodes_map: &NodesMap, old_leader_id: Option<u64>) -> u64 {
+pub fn collect_leader_ids(nodes_map: &NodesMap) -> u64 {
     let receiver = {
         let (sender, receiver) = unbounded();
         nodes_map.iter().for_each(|(_, (_, _, s, _))| {
             s.unbounded_send(TestMessages::WaitForLeaderId {
                 result: sender.clone(),
-                old_leader: old_leader_id,
+                created: Instant::now(),
             }).unwrap();
         });
         receiver
@@ -355,7 +366,7 @@ pub fn generate_random_data(count: usize) -> HashMap<Vec<u8>, Vec<u8>> {
 
 /// Create a snapshot on each node and compare all of them.
 pub fn compare_node_snapshots(nodes_map: &NodesMap) {
-    let leader_id = collect_leader_ids(nodes_map, None);
+    let leader_id = collect_leader_ids(nodes_map);
 
     let (sender, receiver) = unbounded();
     nodes_map
@@ -404,4 +415,16 @@ pub fn wait_for_snapshot_applied(nodes_map: &NodesMap, node_id: u64) {
         .unwrap();
 
     current_thread::block_on_all(receiver.collect()).unwrap();
+}
+
+pub fn wait_for_cluster_majority_down(nodes_map: &NodesMap) {
+    let (sender, receiver) = unbounded();
+    nodes_map
+        .get(&collect_leader_ids(nodes_map))
+        .unwrap()
+        .2
+        .unbounded_send(TestMessages::WaitForMajorityDown { result: sender })
+        .unwrap();
+
+    current_thread::block_on_all(receiver.into_future()).unwrap();
 }
