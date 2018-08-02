@@ -18,6 +18,13 @@ in the individual files in the `src` directory. The integration tests are in the
 
 This implementation currently does not have any working benchmarks.
 
+### TODO
+
+* Use `WriteBatch` to batch multiple writes as one atomic operation. This should also increase the performance.
+* Work on all the TODOs in the source code.
+* Use less `unwraps`. The code uses unwraps in a lot of cases, this should be minimized.
+* Merge incoming and outgoing `TCPStreams` into on structure.
+
 ### License
 
 Licensed under either of
